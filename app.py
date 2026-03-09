@@ -43,7 +43,6 @@ FUENTES_NAC = [
     {"id": "dobleamarilla", "nombre": "Doble Amarilla", "url": "https://www.dobleamarilla.com.ar/",                   "color": "#a07800", "es_wp": True},
     {"id": "bolavip",       "nombre": "Bolavip",        "url": "https://bolavip.com/ar",                              "color": "#c04a00"},
     {"id": "lavoz",         "nombre": "La Voz",         "url": "https://www.lavoz.com.ar/deportes/",                  "color": "#8b0000"},
-    {"id": "cielo",         "nombre": "Cielo Sports",   "url": "https://infocielo.com/cielosports",                   "color": "#0077bb"},
     {"id": "capital",       "nombre": "La Capital",     "url": "https://www.lacapital.com.ar/secciones/ovacion.html", "color": "#6a0d8a"},
     {"id": "na",            "nombre": "Noticias Arg.",  "url": "https://noticiasargentinas.com/search?category=65552a2ae38b1d41233b1aac", "color": "#c00060"},
 ]
@@ -256,11 +255,63 @@ def _es_imagen_generica(img_url: str) -> bool:
     lower = img_url.lower()
     return any(pat in lower for pat in _GENERIC_IMAGE_PATTERNS_EARLY)
 
+def _extraer_imagen_rss_item(item_raw: str) -> str:
+    """Extrae la imagen de un item RSS crudo (string XML). Más robusto que BS4 con namespaces."""
+    # 1. media:content url="..."
+    m = re.search(r'<media:content[^>]+url=["\']([^"\']+)["\']', item_raw)
+    if m:
+        src = m.group(1)
+        if src.startswith("http") and not src.endswith(".gif") and not _es_imagen_generica(src):
+            return src
+
+    # 2. media:thumbnail url="..."
+    m = re.search(r'<media:thumbnail[^>]+url=["\']([^"\']+)["\']', item_raw)
+    if m:
+        src = m.group(1)
+        if src.startswith("http") and not src.endswith(".gif") and not _es_imagen_generica(src):
+            return src
+
+    # 3. enclosure type="image/..." url="..."
+    m = re.search(r'<enclosure[^>]+type=["\']image/[^"\']*["\'][^>]+url=["\']([^"\']+)["\']', item_raw)
+    if not m:
+        m = re.search(r'<enclosure[^>]+url=["\']([^"\']+)["\'][^>]+type=["\']image/[^"\']*["\']', item_raw)
+    if m:
+        src = m.group(1)
+        if src.startswith("http") and not _es_imagen_generica(src):
+            return src
+
+    # 4. content:encoded o description — buscar primer <img src="...">
+    for tag in ["content:encoded", "description"]:
+        m = re.search(rf'<{tag}[^>]*>(.*?)</{tag}>', item_raw, re.DOTALL)
+        if m:
+            content = m.group(1)
+            # Decodificar CDATA si aplica
+            cdata = re.search(r'<!\[CDATA\[(.*?)\]\]>', content, re.DOTALL)
+            if cdata:
+                content = cdata.group(1)
+            # Buscar src= en img tags
+            img_m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', content)
+            if img_m:
+                src = img_m.group(1)
+                if src.startswith("http") and not src.endswith(".gif") and not _es_imagen_generica(src):
+                    return src
+            # También wp:featuredmedia o similares con URL
+            wp_m = re.search(r'https?://[^\s"\'<>]+(?:jpg|jpeg|png|webp)', content, re.IGNORECASE)
+            if wp_m:
+                src = wp_m.group(0)
+                if not _es_imagen_generica(src):
+                    return src
+
+    return ""
+
 def extraer_rss(xml_text: str) -> list:
     noticias, vistos = [], set()
     try:
         soup = BeautifulSoup(xml_text, "xml")
-        for item in soup.find_all(["item", "entry"])[:MAX_ITEMS]:
+        # Dividir el XML en items crudos para extraer imágenes con regex
+        items_raw = re.findall(r'<item>(.*?)</item>', xml_text, re.DOTALL)
+
+        for i, item in enumerate(soup.find_all(["item", "entry"])[:MAX_ITEMS]):
             titulo_tag = item.find("title")
             if not titulo_tag:
                 continue
@@ -277,28 +328,10 @@ def extraer_rss(xml_text: str) -> list:
             if not url or not url.startswith("http"):
                 guid = item.find("guid", isPermaLink="true")
                 url = guid.get_text(strip=True) if guid else None
-            # Intentar extraer imagen desde media:content, media:thumbnail, enclosure
+            # Extraer imagen del item crudo correspondiente
             imagen = ""
-            for media_tag in ["media:content", "media:thumbnail"]:
-                m = item.find(media_tag)
-                if m:
-                    src = m.get("url", "")
-                    if src and src.startswith("http") and not src.endswith(".gif"):
-                        imagen = src
-                        break
-            if not imagen:
-                enc = item.find("enclosure")
-                if enc and "image" in (enc.get("type", "")):
-                    imagen = enc.get("url", "")
-            if not imagen:
-                # Buscar img en description/content
-                desc = item.find("description") or item.find("content:encoded")
-                if desc:
-                    m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', desc.get_text() or "")
-                    if m:
-                        src = m.group(1)
-                        if src.startswith("http") and not _es_imagen_generica(src):
-                            imagen = src
+            if i < len(items_raw):
+                imagen = _extraer_imagen_rss_item(items_raw[i])
             noticias.append({"titulo": titulo, "url": url, "imagen": imagen})
     except Exception:
         pass
