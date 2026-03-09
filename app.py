@@ -320,33 +320,117 @@ def extraer_generico(html: str, fuente: dict) -> list:
             return resolve_url(link.get("href", ""))
         return None
 
+    # Patrones de clases/padres que indican imagen de firma/autor (NO foto de nota)
+    AUTOR_PATTERNS = [
+        "author", "autor", "firma", "byline", "avatar", "perfil", "profile",
+        "journalist", "periodista", "columnist", "writer", "reporter",
+        "signature", "bio", "headshot",
+    ]
+
+    def _es_img_autor(tag):
+        """Retorna True si la imagen está dentro de un contenedor de firma/autor."""
+        for parent in tag.parents:
+            cls = " ".join(parent.get("class", [])).lower()
+            pid = (parent.get("id") or "").lower()
+            combined = cls + " " + pid
+            if any(p in combined for p in AUTOR_PATTERNS):
+                return True
+            # No escalar más allá del card
+            if parent == tag.parent.parent.parent:
+                break
+        return False
+
+    def _img_score(tag, src):
+        """Puntúa una imagen: más grande y más prominente = mayor score."""
+        score = 0
+        # Dimensiones explícitas
+        try:
+            w = int(tag.get("width") or tag.get("data-width") or 0)
+            h = int(tag.get("height") or tag.get("data-height") or 0)
+            score += w + h
+        except (ValueError, TypeError):
+            pass
+        # Clases que sugieren imagen principal
+        cls = " ".join(tag.get("class", [])).lower()
+        for good in ["featured", "hero", "portada", "principal", "cover", "thumb", "thumbnail", "featured-image", "post-image", "article-image", "nota-img", "card-img"]:
+            if good in cls:
+                score += 500
+        # Clases de autor = penalizar mucho
+        for bad in AUTOR_PATTERNS:
+            if bad in cls:
+                score -= 9999
+        # Si es autor por contexto = penalizar
+        if _es_img_autor(tag):
+            score -= 9999
+        # srcset presente = suele ser imagen de contenido
+        if tag.get("srcset") or tag.get("data-srcset"):
+            score += 200
+        # Dimensiones implícitas de URL (Olé usa /fit-in/NxN/)
+        m = re.search(r'/(\d{3,4})x(\d{3,4})/', src)
+        if m:
+            score += int(m.group(1)) + int(m.group(2))
+        return score
+
     def get_imagen(el):
-        """Extrae la primera imagen relevante de una card."""
+        """Extrae la imagen principal de una card, ignorando fotos de autores."""
         IMG_ATTRS = ["src", "data-src", "data-lazy-src", "data-original", "data-url", "data-image"]
+        candidatos = []  # (score, src)
+
         for tag in el.find_all("img"):
-            for attr in IMG_ATTRS:
-                src = tag.get(attr, "")
-                if (src and src.startswith("http")
-                        and not src.endswith(".gif")
-                        and not _es_imagen_generica(src)
-                        and "1x1" not in src
-                        and "pixel" not in src.lower()):
-                    return src
-            # srcset — tomar la URL más grande (último elemento suele ser la mayor)
+            best_src = ""
+            # srcset primero — generalmente tiene la versión más grande
             srcset = tag.get("srcset", "") or tag.get("data-srcset", "")
             if srcset:
-                candidates = [s.strip().split(" ")[0] for s in srcset.split(",") if s.strip()]
-                for c in reversed(candidates):
-                    if c.startswith("http") and not _es_imagen_generica(c):
-                        return c
-        # También buscar en style background-image
+                parts = [s.strip().split(" ") for s in srcset.split(",") if s.strip()]
+                # Ordenar por ancho declarado (ej "800w") descendente
+                sized = []
+                for p in parts:
+                    url = p[0]
+                    try:
+                        w = int(p[1].rstrip("w")) if len(p) > 1 and p[1].endswith("w") else 0
+                    except ValueError:
+                        w = 0
+                    sized.append((w, url))
+                sized.sort(key=lambda x: x[0], reverse=True)
+                for _, url in sized:
+                    if url.startswith("http") and not _es_imagen_generica(url) and "1x1" not in url:
+                        best_src = url
+                        break
+
+            if not best_src:
+                for attr in IMG_ATTRS:
+                    src = tag.get(attr, "")
+                    if (src and src.startswith("http")
+                            and not src.endswith(".gif")
+                            and not _es_imagen_generica(src)
+                            and "1x1" not in src
+                            and "pixel" not in src.lower()):
+                        best_src = src
+                        break
+
+            if best_src:
+                score = _img_score(tag, best_src)
+                candidatos.append((score, best_src))
+
+        # background-image en estilos
         for tag in el.find_all(style=True):
             m = re.search(r'background(?:-image)?:\s*url\(["\']?(https?://[^"\')\s]+)["\']?\)', tag["style"])
             if m:
                 src = m.group(1)
-                if not _es_imagen_generica(src):
-                    return src
-        return ""
+                if not _es_imagen_generica(src) and "1x1" not in src:
+                    cls = " ".join(tag.get("class", [])).lower()
+                    score = 100
+                    for bad in AUTOR_PATTERNS:
+                        if bad in cls:
+                            score = -9999
+                    candidatos.append((score, src))
+
+        if not candidatos:
+            return ""
+        # Tomar la de mayor score, descartar si score muy negativo (= autor)
+        candidatos.sort(key=lambda x: x[0], reverse=True)
+        best_score, best_src = candidatos[0]
+        return best_src if best_score > -100 else ""
 
     # Intentar cards
     for sel in CARD_SELS:
