@@ -441,21 +441,49 @@ if "tendencias" not in st.session_state:
 _IMAGE_CACHE: dict = {}
 
 # ─── IMÁGENES OG ─────────────────────────────────────────────────────────────
+_FETCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "no-cache",
+    "Referer": "https://www.google.com/",
+}
+
 def fetch_og_image(url: str) -> str:
     """Busca el og:image o twitter:image de una URL. Retorna la URL de la imagen o ''."""
-    if not url or not url.startswith("http"):
+    if not url or not url.startswith("http") or "google.com/search" in url:
         return ""
     if url in _IMAGE_CACHE:
         return _IMAGE_CACHE[url]
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=8)
+        resp = requests.get(url, headers=_FETCH_HEADERS, timeout=10, allow_redirects=True)
         soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Buscar og:image de múltiples formas (Olé a veces usa variantes)
         img = (
             soup.find("meta", property="og:image") or
+            soup.find("meta", property="og:image:url") or
             soup.find("meta", attrs={"name": "twitter:image"}) or
+            soup.find("meta", attrs={"name": "twitter:image:src"}) or
             soup.find("meta", attrs={"name": "og:image"})
         )
-        result = img.get("content", "") if img else ""
+        result = ""
+        if img:
+            result = img.get("content", "") or img.get("value", "") or ""
+
+        # Fallback: primera imagen grande en el artículo
+        if not result:
+            for tag in soup.select("article img, .article img, .nota img, figure img, [class*=hero] img"):
+                src = tag.get("src") or tag.get("data-src") or tag.get("data-lazy-src") or ""
+                if src and src.startswith("http") and not src.endswith(".gif"):
+                    result = src
+                    break
+
         _IMAGE_CACHE[url] = result
         return result
     except Exception:
