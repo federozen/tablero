@@ -435,6 +435,119 @@ if "ole_analisis" not in st.session_state:
     st.session_state.ole_analisis = None
 if "tendencias" not in st.session_state:
     st.session_state.tendencias = []
+if "image_cache" not in st.session_state:
+    st.session_state.image_cache = {}  # url -> og:image url or ""
+
+# ─── IMÁGENES OG ─────────────────────────────────────────────────────────────
+def fetch_og_image(url: str) -> str:
+    """Busca el og:image o twitter:image de una URL. Retorna la URL de la imagen o ''."""
+    if not url or not url.startswith("http"):
+        return ""
+    cached = st.session_state.image_cache.get(url)
+    if cached is not None:
+        return cached
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=8)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        img = (
+            soup.find("meta", property="og:image") or
+            soup.find("meta", attrs={"name": "twitter:image"}) or
+            soup.find("meta", attrs={"name": "og:image"})
+        )
+        result = img.get("content", "") if img else ""
+        st.session_state.image_cache[url] = result
+        return result
+    except Exception:
+        st.session_state.image_cache[url] = ""
+        return ""
+
+def fetch_og_images_batch(noticias: list) -> dict:
+    """Fetch og:images en paralelo para una lista de noticias. Retorna {url: img_url}."""
+    urls_sin_cache = [
+        n["url"] for n in noticias
+        if n.get("url") and st.session_state.image_cache.get(n["url"]) is None
+    ]
+    if urls_sin_cache:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futures = {ex.submit(fetch_og_image, u): u for u in urls_sin_cache}
+            for f in as_completed(futures):
+                f.result()  # los resultados ya quedan en image_cache
+    return st.session_state.image_cache
+
+def render_news_cards(noticias: list, fuente: dict, resultados: dict, cols_per_row: int = 3):
+    """
+    Renderiza noticias como cards con imagen grande arriba del título.
+    Descarga og:images en paralelo antes de renderizar.
+    """
+    if not noticias:
+        st.warning("Sin datos para esta fuente.")
+        return
+
+    # Fetch de imágenes en batch (solo las que no están en cache)
+    with st.spinner("Cargando imágenes..."):
+        fetch_og_images_batch(noticias)
+
+    # Render en grilla
+    rows = [noticias[i:i+cols_per_row] for i in range(0, len(noticias), cols_per_row)]
+    color = fuente["color"]
+
+    for row in rows:
+        cols = st.columns(cols_per_row)
+        for col, n in zip(cols, row):
+            with col:
+                img_url = st.session_state.image_cache.get(n.get("url", ""), "")
+                excl = es_exclusivo(n["titulo"], fuente["id"], resultados)
+
+                # Card HTML completa
+                excl_badge = (
+                    f'<div style="position:absolute;top:8px;left:8px;'
+                    f'background:rgba(212,160,23,.92);color:#fff;'
+                    f'font-size:10px;font-weight:700;padding:2px 8px;'
+                    f'border-radius:3px;letter-spacing:.6px">★ EXCLUSIVO</div>'
+                ) if excl else ""
+
+                img_html = (
+                    f'<div style="position:relative;width:100%;padding-bottom:52%;'
+                    f'overflow:hidden;background:#eef0f5;border-radius:8px 8px 0 0">'
+                    f'<img src="{img_url}" style="position:absolute;inset:0;width:100%;'
+                    f'height:100%;object-fit:cover" onerror="this.style.display=\'none\'">'
+                    f'{excl_badge}</div>'
+                ) if img_url else (
+                    f'<div style="width:100%;padding:28px 0;background:#eef0f5;'
+                    f'border-radius:8px 8px 0 0;text-align:center;font-size:28px">⚽</div>'
+                )
+
+                border_color = "#d4a017" if excl else color
+                bg_excl = "background:#fffdf4;" if excl else ""
+
+                titulo_link = (
+                    f'<a href="{n["url"]}" target="_blank" rel="noopener" '
+                    f'style="color:#14171a;text-decoration:none;font-size:13.5px;'
+                    f'font-weight:600;line-height:1.5;display:block">'
+                    f'{n["titulo"]}</a>'
+                ) if n.get("url") else (
+                    f'<span style="color:#14171a;font-size:13.5px;font-weight:600;'
+                    f'line-height:1.5">{n["titulo"]}</span>'
+                )
+
+                fuente_tag = (
+                    f'<span style="font-size:10px;font-weight:700;color:{color};'
+                    f'font-family:sans-serif;letter-spacing:.6px;text-transform:uppercase">'
+                    f'{fuente["nombre"]}</span>'
+                )
+
+                card_html = f"""
+                <div style="border:1px solid #dde1ea;border-left:3px solid {border_color};
+                     border-radius:8px;overflow:hidden;margin-bottom:4px;{bg_excl}
+                     box-shadow:0 1px 4px rgba(0,0,0,.07)">
+                  {img_html}
+                  <div style="padding:10px 12px 12px">
+                    {fuente_tag}
+                    <div style="margin-top:5px">{titulo_link}</div>
+                  </div>
+                </div>
+                """
+                st.markdown(card_html, unsafe_allow_html=True)
 
 # ─── SIDEBAR ─────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -564,26 +677,20 @@ with tab_nac:
     fuente_obj = next(f for f in FUENTES_NAC if f["nombre"] == fuente_sel)
     noticias = resultados.get(fuente_obj["id"], [])
 
-    st.markdown(
-        f'<span style="color:{fuente_obj["color"]};font-weight:700;font-size:18px">'
-        f'{fuente_obj["nombre"]}</span> — {len(noticias)} noticias',
-        unsafe_allow_html=True,
-    )
+    col_h1, col_h2 = st.columns([3, 1])
+    with col_h1:
+        st.markdown(
+            f'<span style="color:{fuente_obj["color"]};font-weight:700;font-size:18px">'
+            f'{fuente_obj["nombre"]}</span> — {len(noticias)} noticias',
+            unsafe_allow_html=True,
+        )
+    with col_h2:
+        cols_per_row = st.selectbox("Columnas", [2, 3, 4], index=1, key="cols_nac")
 
-    if not noticias:
-        st.warning("Sin datos para esta fuente.")
-    else:
-        filtro = st.text_input("🔍 Filtrar por palabra", key="filtro_nac")
-        lista = [n for n in noticias if filtro.lower() in n["titulo"].lower()] if filtro else noticias
+    filtro = st.text_input("🔍 Filtrar por palabra", key="filtro_nac")
+    lista = [n for n in noticias if filtro.lower() in n["titulo"].lower()] if filtro else noticias
 
-        for n in lista:
-            excl = es_exclusivo(n["titulo"], fuente_obj["id"], resultados)
-            badge = "⭐ " if excl else ""
-            prefix = f'<span style="color:{fuente_obj["color"]};font-size:11px;font-weight:700">{"★ EXCLUSIVO" if excl else ""}</span> ' if excl else ""
-            if n.get("url"):
-                st.markdown(f'{prefix}[{badge}{n["titulo"]}]({n["url"]})', unsafe_allow_html=True)
-            else:
-                st.markdown(f'{prefix}{badge}{n["titulo"]}', unsafe_allow_html=True)
+    render_news_cards(lista, fuente_obj, resultados, cols_per_row=cols_per_row)
 
 # ─── TAB INTERNACIONALES ─────────────────────────────────────────────────────
 with tab_int:
@@ -595,22 +702,20 @@ with tab_int:
     fuente_obj_i = next(f for f in FUENTES_INT if f["nombre"] == fuente_sel_i)
     noticias_i = resultados.get(fuente_obj_i["id"], [])
 
-    st.markdown(
-        f'<span style="color:{fuente_obj_i["color"]};font-weight:700;font-size:18px">'
-        f'{fuente_obj_i["nombre"]}</span> — {len(noticias_i)} noticias',
-        unsafe_allow_html=True,
-    )
+    col_h1i, col_h2i = st.columns([3, 1])
+    with col_h1i:
+        st.markdown(
+            f'<span style="color:{fuente_obj_i["color"]};font-weight:700;font-size:18px">'
+            f'{fuente_obj_i["nombre"]}</span> — {len(noticias_i)} noticias',
+            unsafe_allow_html=True,
+        )
+    with col_h2i:
+        cols_per_row_i = st.selectbox("Columnas", [2, 3, 4], index=1, key="cols_int")
 
-    if not noticias_i:
-        st.warning("Sin datos para esta fuente.")
-    else:
-        filtro_i = st.text_input("🔍 Filtrar por palabra", key="filtro_int")
-        lista_i = [n for n in noticias_i if filtro_i.lower() in n["titulo"].lower()] if filtro_i else noticias_i
-        for n in lista_i:
-            if n.get("url"):
-                st.markdown(f'[{n["titulo"]}]({n["url"]})')
-            else:
-                st.write(n["titulo"])
+    filtro_i = st.text_input("🔍 Filtrar por palabra", key="filtro_int")
+    lista_i = [n for n in noticias_i if filtro_i.lower() in n["titulo"].lower()] if filtro_i else noticias_i
+
+    render_news_cards(lista_i, fuente_obj_i, resultados, cols_per_row=cols_per_row_i)
 
 # ─── TAB OLÉ VS TODOS ────────────────────────────────────────────────────────
 with tab_ole:
