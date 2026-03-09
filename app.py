@@ -18,6 +18,12 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import anthropic
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import numpy as np
+import random
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -1081,67 +1087,206 @@ with tab_tend:
     else:
         total_fuentes = len(TODAS_FUENTES)
 
-        filtro_tend = st.radio(
-            "Filtrar",
-            ["Sin Olé ❌", "Con Olé ✅", "🔥 Hot (+20% medios)", "Todos"],
-            horizontal=True,
-            key="filtro_tend",
-        )
+        # ── Métricas rápidas ─────────────────────────────────────────────────
+        sin_ole  = [t for t in tendencias if not t["tiene_ole"]]
+        con_ole  = [t for t in tendencias if t["tiene_ole"]]
+        hot      = [t for t in tendencias if t["cant_medios"] / total_fuentes >= 0.20]
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Temas detectados", len(tendencias))
+        m2.metric("❌ Sin Olé",  len(sin_ole))
+        m3.metric("✅ Con Olé",  len(con_ole))
+        m4.metric("🔥 Trending", len(hot))
 
-        lista_tend = tendencias[:80]
-        if filtro_tend == "Sin Olé ❌":
-            lista_tend = [t for t in lista_tend if not t["tiene_ole"]]
-        elif filtro_tend == "Con Olé ✅":
-            lista_tend = [t for t in lista_tend if t["tiene_ole"]]
-        elif filtro_tend == "🔥 Hot (+20% medios)":
-            lista_tend = [t for t in lista_tend if t["cant_medios"] / total_fuentes >= 0.20]
+        st.divider()
 
-        st.caption(f"{len(lista_tend)} temas · umbral similitud: {SIMILITUD_UMBRAL}")
+        col_tabla, col_cloud = st.columns([3, 2], gap="large")
 
-        for t in lista_tend[:60]:
-            pct = t["cant_medios"] / total_fuentes
-            if pct >= 0.5:
-                accent = "#dc2626"
-                temp = "🔥🔥🔥"
-            elif pct >= 0.30:
-                accent = "#ea580c"
-                temp = "🔥🔥"
-            elif pct >= 0.15:
-                accent = "#ca8a04"
-                temp = "🔥"
-            else:
-                accent = "#3b82f6"
-                temp = ""
+        # ── TABLA RANKING ────────────────────────────────────────────────────
+        with col_tabla:
+            filtro_tend = st.radio(
+                "Filtrar",
+                ["Sin Olé ❌", "Con Olé ✅", "🔥 Hot", "Todos"],
+                horizontal=True,
+                key="filtro_tend",
+            )
+            lista_tend = tendencias[:80]
+            if filtro_tend == "Sin Olé ❌":
+                lista_tend = [t for t in lista_tend if not t["tiene_ole"]]
+            elif filtro_tend == "Con Olé ✅":
+                lista_tend = [t for t in lista_tend if t["tiene_ole"]]
+            elif filtro_tend == "🔥 Hot":
+                lista_tend = [t for t in lista_tend if t["cant_medios"] / total_fuentes >= 0.20]
 
-            ole_badge = "✅ OLÉ" if t["tiene_ole"] else "❌ FALTA"
-            ole_color = "#15803d" if t["tiene_ole"] else "#991b1b"
+            st.caption(f"{len(lista_tend)} temas")
 
-            with st.expander(
-                f'{temp} {t["titulo"][:85]} — '
-                f'**{t["cant_medios"]} medios** | '
-                f'{t["nac"]}🇦🇷 {t["intl"]}🌍'
-            ):
+            # Barra de calor por tema
+            for idx, t in enumerate(lista_tend[:40]):
+                pct = t["cant_medios"] / total_fuentes
+                bar_w = max(4, int(pct * 100))
+
+                if pct >= 0.5:   accent, emoji = "#dc2626", "🔥🔥"
+                elif pct >= 0.30: accent, emoji = "#ea580c", "🔥"
+                elif pct >= 0.15: accent, emoji = "#ca8a04", "▲"
+                else:             accent, emoji = "#3b82f6", "·"
+
+                ole_dot  = "🟢" if t["tiene_ole"] else "🔴"
+                pct_txt  = f"{t['cant_medios']} medios ({int(pct*100)}%)"
+
+                # Chips de medios
+                medios_html = " ".join(
+                    f'<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;'
+                    f'background:{f["color"]}18;color:{f["color"]};border:1px solid {f["color"]}30">'
+                    f'{f["nombre"]}</span>'
+                    for item in t["noticias"]
+                    for f in [item["fuente"]]
+                )
+
                 st.markdown(
-                    f'<span style="color:{ole_color};font-weight:700;background:{ole_color}15;'
-                    f'padding:2px 10px;border-radius:4px">{ole_badge}</span>',
+                    f"""<div style="margin-bottom:8px;padding:10px 12px;border-radius:8px;
+                        border-left:4px solid {accent};background:#fafafa">
+                      <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+                        <span style="font-size:11px;font-weight:700;color:{accent}">{emoji} {pct_txt}</span>
+                        <span style="font-size:13px">{ole_dot}</span>
+                        <div style="flex:1;height:6px;background:#eee;border-radius:3px;overflow:hidden">
+                          <div style="width:{bar_w}%;height:100%;background:{accent};border-radius:3px"></div>
+                        </div>
+                      </div>
+                      <div style="font-size:13.5px;font-weight:600;color:#0f172a;
+                          line-height:1.4;margin-bottom:6px">{t['titulo'][:120]}</div>
+                      <div style="display:flex;flex-wrap:wrap;gap:3px">{medios_html}</div>
+                    </div>""",
                     unsafe_allow_html=True,
                 )
-                st.write("")
-                for item in t["noticias"]:
-                    n = item["noticia"]
-                    f = item["fuente"]
-                    badge_html = (
-                        f'<span style="color:{f["color"]};font-size:10px;font-weight:700;'
-                        f'background:{f["color"]}15;padding:1px 7px;border-radius:3px">'
-                        f'{f["nombre"]}</span>'
-                    )
-                    if n.get("url"):
-                        st.markdown(
-                            f'{badge_html} [{n["titulo"]}]({n["url"]})',
-                            unsafe_allow_html=True,
-                        )
-                    else:
-                        st.markdown(f'{badge_html} {n["titulo"]}', unsafe_allow_html=True)
+
+                # Detalle expandible
+                with st.expander("▸ ver todas las notas", expanded=False):
+                    for item in t["noticias"]:
+                        n = item["noticia"]
+                        f = item["fuente"]
+                        badge = (f'<span style="color:{f["color"]};font-size:10px;font-weight:700;'
+                                 f'background:{f["color"]}18;padding:1px 7px;border-radius:3px">'
+                                 f'{f["nombre"]}</span>')
+                        if n.get("url"):
+                            st.markdown(f'{badge} [{n["titulo"]}]({n["url"]})', unsafe_allow_html=True)
+                        else:
+                            st.markdown(f'{badge} {n["titulo"]}', unsafe_allow_html=True)
+
+        # ── NUBE DE PALABRAS ─────────────────────────────────────────────────
+        with col_cloud:
+            st.markdown("### 🔤 Nube de Palabras")
+
+            cloud_tab1, cloud_tab2 = st.tabs(["🇦🇷 Nacionales", "🌍 Internacionales"])
+
+            def build_word_freq(fuente_ids):
+                freq = {}
+                extra_stop = {
+                    "partido","partidos","juego","juegos","dice","dijo","señaló",
+                    "aseguró","confirmó","reveló","anunció","habló","tiene","hoy",
+                    "ayer","mañana","semana","año","mes","vez","nuevo","nueva",
+                    "gran","primer","primera","tras","ante","bajo","será","puede",
+                    "equipo","equipo","sobre","habla","luego","hace","dado","según",
+                    "after","over","into","than","their","they","this","that","with",
+                }
+                for fid in fuente_ids:
+                    for n in (st.session_state.resultados or {}).get(fid, []):
+                        tokens = normalizar_titulo(n["titulo"]) - extra_stop
+                        for w in tokens:
+                            if len(w) > 3:
+                                freq[w] = freq.get(w, 0) + 1
+                return sorted(freq.items(), key=lambda x: -x[1])[:80]
+
+            def draw_word_cloud(freq_list, color_base, ax):
+                if not freq_list:
+                    ax.text(0.5, 0.5, "Sin datos", ha="center", va="center",
+                            fontsize=14, color="#aaa", transform=ax.transAxes)
+                    ax.axis("off")
+                    return
+
+                ax.set_facecolor("#f8fafc")
+                ax.set_xlim(0, 100)
+                ax.set_ylim(0, 100)
+                ax.axis("off")
+
+                max_c = freq_list[0][1]
+                min_c = freq_list[-1][1]
+                rng = max_c - min_c or 1
+
+                placed = []  # list of (x, y, w, h)
+
+                def overlaps(x, y, w, h):
+                    pad = 1.5
+                    for (px, py, pw, ph) in placed:
+                        if (x < px + pw + pad and x + w + pad > px and
+                                y < py + ph + pad and y + h + pad > py):
+                            return True
+                    return False
+
+                random.seed(42)
+                for word, count in freq_list[:60]:
+                    t_norm = (count - min_c) / rng
+                    fsize  = 7 + t_norm * 22
+                    alpha  = 0.45 + t_norm * 0.55
+                    # Interpolar color base → gris claro
+                    r = int(color_base[0] + (0.92 - color_base[0]) * (1 - t_norm))
+                    g = int(color_base[1] + (0.94 - color_base[1]) * (1 - t_norm))
+                    b = int(color_base[2] + (0.97 - color_base[2]) * (1 - t_norm))
+
+                    # Estimar tamaño del texto en unidades de datos
+                    char_w = fsize * 0.55
+                    w_est = len(word) * char_w * 0.012 * 10
+                    h_est = fsize * 0.018 * 10
+
+                    # Intentar posicionar en espiral desde el centro
+                    placed_ok = False
+                    for step in range(300):
+                        angle = step * 0.25
+                        radius = step * 0.18
+                        cx = 50 + radius * np.cos(angle)
+                        cy = 50 + radius * np.sin(angle) * 0.6
+                        x = cx - w_est / 2
+                        y = cy - h_est / 2
+                        if x < 1 or x + w_est > 99 or y < 1 or y + h_est > 99:
+                            continue
+                        if not overlaps(x, y, w_est, h_est):
+                            placed.append((x, y, w_est, h_est))
+                            weight = "bold" if t_norm > 0.5 else "normal"
+                            ax.text(cx, cy, word,
+                                    fontsize=fsize, ha="center", va="center",
+                                    color=(r/255, g/255, b/255), alpha=alpha,
+                                    fontweight=weight)
+                            placed_ok = True
+                            break
+
+            nac_ids  = [f["id"] for f in FUENTES_NAC]
+            intl_ids = [f["id"] for f in FUENTES_INT]
+
+            with cloud_tab1:
+                freq_nac = build_word_freq(nac_ids)
+                fig, ax = plt.subplots(figsize=(5, 4))
+                fig.patch.set_facecolor("#f8fafc")
+                draw_word_cloud(freq_nac, (0, 0.66, 0.27), ax)  # verde Olé
+                plt.tight_layout(pad=0)
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)
+
+                if freq_nac:
+                    st.caption("Top palabras nacionales:")
+                    top5 = " · ".join(f"**{w}** ({c})" for w, c in freq_nac[:8])
+                    st.markdown(top5)
+
+            with cloud_tab2:
+                freq_int = build_word_freq(intl_ids)
+                fig, ax = plt.subplots(figsize=(5, 4))
+                fig.patch.set_facecolor("#f8fafc")
+                draw_word_cloud(freq_int, (0.10, 0.49, 0.76), ax)  # azul
+                plt.tight_layout(pad=0)
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)
+
+                if freq_int:
+                    st.caption("Top palabras internacionales:")
+                    top5 = " · ".join(f"**{w}** ({c})" for w, c in freq_int[:8])
+                    st.markdown(top5)
 
 # ─── TAB IA ──────────────────────────────────────────────────────────────────
 with tab_ia:
