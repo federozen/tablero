@@ -40,13 +40,11 @@ FUENTES_NAC = [
     {"id": "tn",            "nombre": "TN Deportes",    "url": "https://tn.com.ar/deportes/",                         "color": "#cc2200"},
     {"id": "clarin",        "nombre": "Clarín Dep.",    "url": "https://www.clarin.com/deportes/",                    "color": "#c00000"},
     {"id": "elgrafico",     "nombre": "El Gráfico",     "url": "https://www.elgrafico.com.ar/",                       "color": "#b07800"},
-    {"id": "dobleamarilla", "nombre": "Doble Amarilla", "url": "https://www.dobleamarilla.com.ar/",                   "color": "#a07800"},
+    {"id": "dobleamarilla", "nombre": "Doble Amarilla", "url": "https://www.dobleamarilla.com.ar/",                   "color": "#a07800", "es_wp": True},
     {"id": "bolavip",       "nombre": "Bolavip",        "url": "https://bolavip.com/ar",                              "color": "#c04a00"},
     {"id": "lavoz",         "nombre": "La Voz",         "url": "https://www.lavoz.com.ar/deportes/",                  "color": "#8b0000"},
     {"id": "cielo",         "nombre": "Cielo Sports",   "url": "https://infocielo.com/cielosports",                   "color": "#0077bb"},
     {"id": "capital",       "nombre": "La Capital",     "url": "https://www.lacapital.com.ar/secciones/ovacion.html", "color": "#6a0d8a"},
-    {"id": "pagina12",      "nombre": "Página 12",      "url": "https://www.pagina12.com.ar/secciones/deportes",      "color": "#1a1a6e"},
-    {"id": "ambito",        "nombre": "Ámbito Dep.",    "url": "https://www.ambito.com/deportes",                     "color": "#006633"},
     {"id": "na",            "nombre": "Noticias Arg.",  "url": "https://noticiasargentinas.com/search?category=65552a2ae38b1d41233b1aac", "color": "#c00060"},
 ]
 
@@ -279,7 +277,29 @@ def extraer_rss(xml_text: str) -> list:
             if not url or not url.startswith("http"):
                 guid = item.find("guid", isPermaLink="true")
                 url = guid.get_text(strip=True) if guid else None
-            noticias.append({"titulo": titulo, "url": url})
+            # Intentar extraer imagen desde media:content, media:thumbnail, enclosure
+            imagen = ""
+            for media_tag in ["media:content", "media:thumbnail"]:
+                m = item.find(media_tag)
+                if m:
+                    src = m.get("url", "")
+                    if src and src.startswith("http") and not src.endswith(".gif"):
+                        imagen = src
+                        break
+            if not imagen:
+                enc = item.find("enclosure")
+                if enc and "image" in (enc.get("type", "")):
+                    imagen = enc.get("url", "")
+            if not imagen:
+                # Buscar img en description/content
+                desc = item.find("description") or item.find("content:encoded")
+                if desc:
+                    m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', desc.get_text() or "")
+                    if m:
+                        src = m.group(1)
+                        if src.startswith("http") and not _es_imagen_generica(src):
+                            imagen = src
+            noticias.append({"titulo": titulo, "url": url, "imagen": imagen})
     except Exception:
         pass
     return noticias[:MAX_ITEMS]
@@ -287,6 +307,16 @@ def extraer_rss(xml_text: str) -> list:
 def extraer_generico(html: str, fuente: dict) -> list:
     if fuente.get("es_rss"):
         return extraer_rss(html)
+
+    # Doble Amarilla es WordPress — usar su feed RSS que incluye imágenes
+    if fuente.get("es_wp"):
+        feed_url = fuente["url"].rstrip("/") + "/feed/"
+        try:
+            resp = requests.get(feed_url, headers=_FETCH_HEADERS, timeout=15)
+            if resp.status_code == 200 and "<rss" in resp.text[:500]:
+                return extraer_rss(resp.text)
+        except Exception:
+            pass  # Fallback al scraping normal si el feed falla
 
     soup = BeautifulSoup(html, "html.parser")
     base_url = re.match(r"https?://[^/]+", fuente["url"])
@@ -350,9 +380,16 @@ def extraer_generico(html: str, fuente: dict) -> list:
             score += w + h
         except (ValueError, TypeError):
             pass
-        # Clases que sugieren imagen principal
+        # Clases que sugieren imagen principal (incluyendo WordPress)
         cls = " ".join(tag.get("class", [])).lower()
-        for good in ["featured", "hero", "portada", "principal", "cover", "thumb", "thumbnail", "featured-image", "post-image", "article-image", "nota-img", "card-img"]:
+        for good in [
+            "featured", "hero", "portada", "principal", "cover",
+            "thumb", "thumbnail", "featured-image", "post-image",
+            "article-image", "nota-img", "card-img",
+            # WordPress específico
+            "wp-post-image", "attachment-", "size-large", "size-full",
+            "size-medium_large", "wp-block-image", "entry-thumb",
+        ]:
             if good in cls:
                 score += 500
         # Clases de autor = penalizar mucho
@@ -365,10 +402,14 @@ def extraer_generico(html: str, fuente: dict) -> list:
         # srcset presente = suele ser imagen de contenido
         if tag.get("srcset") or tag.get("data-srcset"):
             score += 200
-        # Dimensiones implícitas de URL (Olé usa /fit-in/NxN/)
-        m = re.search(r'/(\d{3,4})x(\d{3,4})/', src)
+        # Dimensiones implícitas de URL (Olé usa /fit-in/NxN/, WP usa -NNNxNNN.)
+        m = re.search(r'[-/](\d{3,4})x(\d{3,4})[-/.]', src)
         if m:
             score += int(m.group(1)) + int(m.group(2))
+        # alt descriptivo (no vacío, no "logo") también suma
+        alt = (tag.get("alt") or "").lower()
+        if alt and len(alt) > 5 and "logo" not in alt:
+            score += 50
         return score
 
     def get_imagen(el):
