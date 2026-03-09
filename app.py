@@ -435,17 +435,18 @@ if "ole_analisis" not in st.session_state:
     st.session_state.ole_analisis = None
 if "tendencias" not in st.session_state:
     st.session_state.tendencias = []
-if "image_cache" not in st.session_state:
-    st.session_state.image_cache = {}  # url -> og:image url or ""
+
+# Cache de imágenes a nivel de módulo (accesible desde threads)
+# Se mantiene mientras el proceso de Streamlit esté vivo
+_IMAGE_CACHE: dict = {}
 
 # ─── IMÁGENES OG ─────────────────────────────────────────────────────────────
 def fetch_og_image(url: str) -> str:
     """Busca el og:image o twitter:image de una URL. Retorna la URL de la imagen o ''."""
     if not url or not url.startswith("http"):
         return ""
-    cached = st.session_state.image_cache.get(url)
-    if cached is not None:
-        return cached
+    if url in _IMAGE_CACHE:
+        return _IMAGE_CACHE[url]
     try:
         resp = requests.get(url, headers=HEADERS, timeout=8)
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -455,24 +456,27 @@ def fetch_og_image(url: str) -> str:
             soup.find("meta", attrs={"name": "og:image"})
         )
         result = img.get("content", "") if img else ""
-        st.session_state.image_cache[url] = result
+        _IMAGE_CACHE[url] = result
         return result
     except Exception:
-        st.session_state.image_cache[url] = ""
+        _IMAGE_CACHE[url] = ""
         return ""
 
-def fetch_og_images_batch(noticias: list) -> dict:
-    """Fetch og:images en paralelo para una lista de noticias. Retorna {url: img_url}."""
+def fetch_og_images_batch(noticias: list) -> None:
+    """Fetch og:images en paralelo para una lista de noticias. Guarda en _IMAGE_CACHE."""
     urls_sin_cache = [
         n["url"] for n in noticias
-        if n.get("url") and st.session_state.image_cache.get(n["url"]) is None
+        if n.get("url") and n["url"] not in _IMAGE_CACHE
     ]
-    if urls_sin_cache:
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            futures = {ex.submit(fetch_og_image, u): u for u in urls_sin_cache}
-            for f in as_completed(futures):
-                f.result()  # los resultados ya quedan en image_cache
-    return st.session_state.image_cache
+    if not urls_sin_cache:
+        return
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures = [ex.submit(fetch_og_image, u) for u in urls_sin_cache]
+        for f in as_completed(futures):
+            try:
+                f.result()
+            except Exception:
+                pass
 
 def render_news_cards(noticias: list, fuente: dict, resultados: dict, cols_per_row: int = 3):
     """
@@ -495,7 +499,7 @@ def render_news_cards(noticias: list, fuente: dict, resultados: dict, cols_per_r
         cols = st.columns(cols_per_row)
         for col, n in zip(cols, row):
             with col:
-                img_url = st.session_state.image_cache.get(n.get("url", ""), "")
+                img_url = _IMAGE_CACHE.get(n.get("url", ""), "")
                 excl = es_exclusivo(n["titulo"], fuente["id"], resultados)
 
                 # Card HTML completa
