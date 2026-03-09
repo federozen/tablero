@@ -345,6 +345,27 @@ def fetch_fuente(fuente: dict) -> dict:
     try:
         resp = requests.get(fuente["url"], headers=HEADERS, timeout=15)
         resp.raise_for_status()
+        # Detectar encoding real desde el header o el HTML antes de usar resp.text
+        # requests a veces asume ISO-8859-1 para text/html sin charset declarado
+        content_type = resp.headers.get("content-type", "").lower()
+        if "charset=" in content_type:
+            # Respetar el charset del servidor
+            encoding = content_type.split("charset=")[-1].split(";")[0].strip()
+        else:
+            # Intentar detectar desde el meta charset del HTML
+            raw = resp.content
+            sniff = raw[:4096].decode("ascii", errors="ignore").lower()
+            if 'charset="utf-8"' in sniff or "charset=utf-8" in sniff:
+                encoding = "utf-8"
+            elif 'charset="iso-8859-1"' in sniff or 'charset=iso-8859-1' in sniff:
+                encoding = "iso-8859-1"
+            elif 'charset="windows-1252"' in sniff or 'charset=windows-1252' in sniff:
+                encoding = "windows-1252"
+            else:
+                # Si apparent_encoding detecta latin, usarlo; si no, utf-8
+                detected = resp.apparent_encoding or "utf-8"
+                encoding = detected if detected.lower() not in ("ascii", "windows-1252") else "utf-8"
+        resp.encoding = encoding
         noticias = extraer_generico(resp.text, fuente)
         return {"id": fuente["id"], "noticias": noticias, "error": None}
     except Exception as e:
@@ -454,8 +475,22 @@ _FETCH_HEADERS = {
     "Referer": "https://www.google.com/",
 }
 
+# Fragmentos de URL que indican una imagen genérica/logo (no foto de nota)
+_GENERIC_IMAGE_PATTERNS = [
+    "logo", "brand", "favicon", "default", "placeholder",
+    "og-default", "og_default", "share-default",
+    "ole-logo", "ole_logo", "icon",
+]
+
+def _es_imagen_generica(img_url: str) -> bool:
+    """Retorna True si la URL parece ser un logo o imagen genérica del sitio."""
+    if not img_url:
+        return True
+    lower = img_url.lower()
+    return any(pat in lower for pat in _GENERIC_IMAGE_PATTERNS)
+
 def fetch_og_image(url: str) -> str:
-    """Busca el og:image o twitter:image de una URL. Retorna la URL de la imagen o ''."""
+    """Busca la imagen principal de una nota. Retorna la URL de la imagen o ''."""
     if not url or not url.startswith("http") or "google.com/search" in url:
         return ""
     if url in _IMAGE_CACHE:
@@ -464,28 +499,50 @@ def fetch_og_image(url: str) -> str:
         resp = requests.get(url, headers=_FETCH_HEADERS, timeout=10, allow_redirects=True)
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Buscar og:image de múltiples formas (Olé a veces usa variantes)
-        img = (
-            soup.find("meta", property="og:image") or
-            soup.find("meta", property="og:image:url") or
-            soup.find("meta", attrs={"name": "twitter:image"}) or
-            soup.find("meta", attrs={"name": "twitter:image:src"}) or
-            soup.find("meta", attrs={"name": "og:image"})
-        )
-        result = ""
-        if img:
-            result = img.get("content", "") or img.get("value", "") or ""
+        # 1. Intentar og:image / twitter:image
+        for meta in [
+            soup.find("meta", property="og:image"),
+            soup.find("meta", property="og:image:url"),
+            soup.find("meta", attrs={"name": "twitter:image"}),
+            soup.find("meta", attrs={"name": "twitter:image:src"}),
+        ]:
+            if not meta:
+                continue
+            candidate = meta.get("content", "") or meta.get("value", "") or ""
+            if candidate and not _es_imagen_generica(candidate):
+                _IMAGE_CACHE[url] = candidate
+                return candidate
 
-        # Fallback: primera imagen grande en el artículo
-        if not result:
-            for tag in soup.select("article img, .article img, .nota img, figure img, [class*=hero] img"):
-                src = tag.get("src") or tag.get("data-src") or tag.get("data-lazy-src") or ""
-                if src and src.startswith("http") and not src.endswith(".gif"):
-                    result = src
-                    break
+        # 2. Fallback: primera imagen grande dentro del artículo
+        #    Selectores ordenados de más específico a más genérico
+        img_selectors = [
+            "article figure img",
+            "article .image img",
+            "article img[src]",
+            ".nota-cuerpo img",
+            ".article-body img",
+            ".entry-content img",
+            "figure img",
+            "[class*=hero] img",
+            "[class*=featured] img",
+            "[class*=portada] img",
+            "[class*=cover] img",
+        ]
+        for sel in img_selectors:
+            for tag in soup.select(sel):
+                src = (
+                    tag.get("src") or tag.get("data-src") or
+                    tag.get("data-lazy-src") or tag.get("data-original") or ""
+                )
+                if (src and src.startswith("http")
+                        and not src.endswith(".gif")
+                        and not _es_imagen_generica(src)
+                        and "1x1" not in src and "pixel" not in src.lower()):
+                    _IMAGE_CACHE[url] = src
+                    return src
 
-        _IMAGE_CACHE[url] = result
-        return result
+        _IMAGE_CACHE[url] = ""
+        return ""
     except Exception:
         _IMAGE_CACHE[url] = ""
         return ""
