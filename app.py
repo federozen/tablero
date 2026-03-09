@@ -267,7 +267,7 @@ def extraer_generico(html: str, fuente: dict) -> list:
     if fuente.get("es_rss"):
         return extraer_rss(html)
 
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, "html.parser")
     base_url = re.match(r"https?://[^/]+", fuente["url"])
     base = base_url.group(0) if base_url else ""
     noticias, vistos = [], set()
