@@ -244,6 +244,20 @@ def analizar_ole_vs_compecencia_safe(resultados: dict) -> dict:
 # ─── EXTRACCIÓN HTML ──────────────────────────────────────────────────────────
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; DepMonitorPro/10.0)"}
 
+# Patrones para detectar imágenes genéricas/logos (definidos aquí para uso en extraer_generico)
+_GENERIC_IMAGE_PATTERNS_EARLY = [
+    "logo", "brand", "favicon", "default", "placeholder",
+    "og-default", "og_default", "share-default",
+    "ole-logo", "ole_logo", "icon",
+]
+
+def _es_imagen_generica(img_url: str) -> bool:
+    """Retorna True si la URL parece ser un logo o imagen genérica del sitio."""
+    if not img_url:
+        return True
+    lower = img_url.lower()
+    return any(pat in lower for pat in _GENERIC_IMAGE_PATTERNS_EARLY)
+
 def extraer_rss(xml_text: str) -> list:
     noticias, vistos = [], set()
     try:
@@ -306,6 +320,34 @@ def extraer_generico(html: str, fuente: dict) -> list:
             return resolve_url(link.get("href", ""))
         return None
 
+    def get_imagen(el):
+        """Extrae la primera imagen relevante de una card."""
+        IMG_ATTRS = ["src", "data-src", "data-lazy-src", "data-original", "data-url", "data-image"]
+        for tag in el.find_all("img"):
+            for attr in IMG_ATTRS:
+                src = tag.get(attr, "")
+                if (src and src.startswith("http")
+                        and not src.endswith(".gif")
+                        and not _es_imagen_generica(src)
+                        and "1x1" not in src
+                        and "pixel" not in src.lower()):
+                    return src
+            # srcset — tomar la URL más grande (último elemento suele ser la mayor)
+            srcset = tag.get("srcset", "") or tag.get("data-srcset", "")
+            if srcset:
+                candidates = [s.strip().split(" ")[0] for s in srcset.split(",") if s.strip()]
+                for c in reversed(candidates):
+                    if c.startswith("http") and not _es_imagen_generica(c):
+                        return c
+        # También buscar en style background-image
+        for tag in el.find_all(style=True):
+            m = re.search(r'background(?:-image)?:\s*url\(["\']?(https?://[^"\')\s]+)["\']?\)', tag["style"])
+            if m:
+                src = m.group(1)
+                if not _es_imagen_generica(src):
+                    return src
+        return ""
+
     # Intentar cards
     for sel in CARD_SELS:
         for card in soup.select(sel)[:MAX_ITEMS * 2]:
@@ -323,7 +365,8 @@ def extraer_generico(html: str, fuente: dict) -> list:
                 continue
             vistos.add(titulo)
             url = get_url(card, titulo_el)
-            noticias.append({"titulo": titulo, "url": url})
+            imagen = get_imagen(card)
+            noticias.append({"titulo": titulo, "url": url, "imagen": imagen})
 
     # Fallback: sólo headings
     if len(noticias) < 8:
@@ -475,20 +518,6 @@ _FETCH_HEADERS = {
     "Referer": "https://www.google.com/",
 }
 
-# Fragmentos de URL que indican una imagen genérica/logo (no foto de nota)
-_GENERIC_IMAGE_PATTERNS = [
-    "logo", "brand", "favicon", "default", "placeholder",
-    "og-default", "og_default", "share-default",
-    "ole-logo", "ole_logo", "icon",
-]
-
-def _es_imagen_generica(img_url: str) -> bool:
-    """Retorna True si la URL parece ser un logo o imagen genérica del sitio."""
-    if not img_url:
-        return True
-    lower = img_url.lower()
-    return any(pat in lower for pat in _GENERIC_IMAGE_PATTERNS)
-
 def fetch_og_image(url: str) -> str:
     """Busca la imagen principal de una nota. Retorna la URL de la imagen o ''."""
     if not url or not url.startswith("http") or "google.com/search" in url:
@@ -572,9 +601,11 @@ def render_news_cards(noticias: list, fuente: dict, resultados: dict, cols_per_r
         st.warning("Sin datos para esta fuente.")
         return
 
-    # Fetch de imágenes en batch (solo las que no están en cache)
-    with st.spinner("Cargando imágenes..."):
-        fetch_og_images_batch(noticias)
+    # Separar noticias sin imagen del scraping — esas necesitan fetch de og:image
+    sin_imagen = [n for n in noticias if not n.get("imagen") and n.get("url")]
+    if sin_imagen:
+        with st.spinner("Cargando imágenes..."):
+            fetch_og_images_batch(sin_imagen)
 
     # Render en grilla
     rows = [noticias[i:i+cols_per_row] for i in range(0, len(noticias), cols_per_row)]
@@ -584,7 +615,8 @@ def render_news_cards(noticias: list, fuente: dict, resultados: dict, cols_per_r
         cols = st.columns(cols_per_row)
         for col, n in zip(cols, row):
             with col:
-                img_url = _IMAGE_CACHE.get(n.get("url", ""), "")
+                # Prioridad: imagen extraída del card > og:image cacheado
+                img_url = n.get("imagen") or _IMAGE_CACHE.get(n.get("url", ""), "")
                 excl = es_exclusivo(n["titulo"], fuente["id"], resultados)
 
                 # Card HTML completa
