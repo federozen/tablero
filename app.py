@@ -234,6 +234,13 @@ def calcular_tendencias(resultados: dict) -> list:
         for c in clusters
     ]
 
+def analizar_ole_vs_compecencia_safe(resultados: dict) -> dict:
+    """Wrapper seguro para el análisis semántico."""
+    try:
+        return analizar_ole_vs_competencia(resultados)
+    except Exception as e:
+        return {"exclusivos_ole": [], "faltantes_en_ole": [], "cubiertos_por_ambos": []}
+
 # ─── EXTRACCIÓN HTML ──────────────────────────────────────────────────────────
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; DepMonitorPro/10.0)"}
 
@@ -524,13 +531,7 @@ with st.sidebar:
                     st.error(f"Error: {e}")
 
 
-def analizar_ole_vs_compecencia_safe(resultados):
-    """Wrapper seguro para el análisis."""
-    try:
-        return analizar_ole_vs_competencia(resultados)
-    except Exception as e:
-        st.error(f"Error en análisis semántico: {e}")
-        return {"exclusivos_ole": [], "faltantes_en_ole": [], "cubiertos_por_ambos": []}
+
 
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
