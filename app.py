@@ -29,6 +29,57 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ─── CSS GLOBAL ───────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* ── Fuente base más grande ── */
+html, body, [class*="css"] {
+    font-size: 16px !important;
+}
+
+/* ── Tabs principales: envolver en lugar de scrollear ── */
+.stTabs [data-baseweb="tab-list"] {
+    flex-wrap: wrap !important;
+    gap: 4px !important;
+    overflow-x: visible !important;
+    white-space: normal !important;
+}
+.stTabs [data-baseweb="tab"] {
+    font-size: 15px !important;
+    font-weight: 600 !important;
+    padding: 8px 16px !important;
+    white-space: nowrap !important;
+    border-radius: 6px 6px 0 0 !important;
+}
+
+/* ── Títulos de noticias en cards ── */
+.stMarkdown a, .stMarkdown p, .stMarkdown span {
+    font-size: 15px;
+    line-height: 1.55;
+}
+
+/* ── Sidebar más legible ── */
+[data-testid="stSidebar"] {
+    font-size: 15px !important;
+}
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] .stSelectbox,
+[data-testid="stSidebar"] .stButton button {
+    font-size: 15px !important;
+}
+
+/* ── Selectbox y radios más grandes ── */
+.stSelectbox > div, .stRadio label {
+    font-size: 15px !important;
+}
+
+/* ── Expanders ── */
+.streamlit-expanderHeader {
+    font-size: 14px !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 MAX_ITEMS = 50
 SIMILITUD_UMBRAL = 0.22
 
@@ -802,11 +853,11 @@ def render_news_cards(noticias: list, fuente: dict, resultados: dict, cols_per_r
 
                 titulo_link = (
                     f'<a href="{n["url"]}" target="_blank" rel="noopener" '
-                    f'style="color:#14171a;text-decoration:none;font-size:13.5px;'
+                    f'style="color:#14171a;text-decoration:none;font-size:15px;'
                     f'font-weight:600;line-height:1.5;display:block">'
                     f'{n["titulo"]}</a>'
                 ) if n.get("url") else (
-                    f'<span style="color:#14171a;font-size:13.5px;font-weight:600;'
+                    f'<span style="color:#14171a;font-size:15px;font-weight:600;'
                     f'line-height:1.5">{n["titulo"]}</span>'
                 )
 
@@ -1252,7 +1303,7 @@ with tab_tend:
                     </div>
                     <span style="font-size:10px;color:#94a3b8">{bar_pct}%</span>
                   </div>
-                  <div style="font-size:14px;font-weight:600;color:#0f172a;
+                  <div style="font-size:15px;font-weight:600;color:#0f172a;
                       line-height:1.4;margin-bottom:5px">{t['titulo'][:130]}</div>
                   <div style="display:flex;flex-wrap:wrap;gap:2px">{chips}</div>
                 </div>""",
