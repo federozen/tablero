@@ -1180,103 +1180,95 @@ with tab_tend:
             )
 
         # ── Layout: ranking | nubes ───────────────────────────────────────────
-        col_rank, col_cloud = st.columns([3, 2], gap="large")
+        # ── NUBE DE PALABRAS (ancho completo, arriba) ─────────────────────────
+        st.markdown("#### 🔤 Nube de palabras")
+        nac_ids  = [f["id"] for f in FUENTES_NAC]
+        intl_ids = [f["id"] for f in FUENTES_INT]
+        ct1, ct2 = st.tabs(["🇦🇷 Nacionales", "🌍 Internacionales"])
 
-        with col_rank:
-            st.markdown("#### 📊 Ranking de temas")
-            filtro = st.radio(
-                "Filtrar por",
-                ["Sin Olé ❌", "Con Olé ✅", "🔥 Hot", "Todos"],
-                horizontal=True, key="filtro_tend",
-            )
-            lista = tendencias[:80]
-            if filtro == "Sin Olé ❌":   lista = [t for t in lista if not t["tiene_ole"]]
-            elif filtro == "Con Olé ✅": lista = [t for t in lista if t["tiene_ole"]]
-            elif filtro == "🔥 Hot":     lista = [t for t in lista if t["cant_medios"] / total_fuentes >= 0.20]
-
-            st.caption(f"{len(lista)} temas · similitud Jaccard ≥ {SIMILITUD_UMBRAL}")
-
-            for t in lista[:50]:
-                pct = t["cant_medios"] / total_fuentes
-                bar_pct = int(pct * 100)
-                if pct >= 0.5:    accent, emoji = "#dc2626", "🔥🔥"
-                elif pct >= 0.30: accent, emoji = "#ea580c", "🔥"
-                elif pct >= 0.15: accent, emoji = "#ca8a04", "▲"
-                else:             accent, emoji = "#3b82f6", "·"
-
-                ole_dot = "🟢" if t["tiene_ole"] else "🔴"
-
-                chips = "".join(
-                    f'<span style="font-size:9px;font-weight:700;padding:1px 5px;'
-                    f'border-radius:3px;background:{item["fuente"]["color"]}18;'
-                    f'color:{item["fuente"]["color"]};border:1px solid {item["fuente"]["color"]}30">'
-                    f'{item["fuente"]["nombre"]}</span> '
-                    for item in t["noticias"]
+        def _cloud_section(fuente_ids, color_hex):
+            freq = build_word_freq(fuente_ids)
+            cloud_html = html_word_cloud(freq, color_hex).replace("height:260px", "height:320px")
+            st.markdown(cloud_html, unsafe_allow_html=True)
+            if freq:
+                top = " &nbsp;·&nbsp; ".join(
+                    f'<b>{w}</b> <span style="color:#94a3b8;font-size:11px">×{c}</span>'
+                    for w, c in freq[:14]
                 )
-
                 st.markdown(
-                    f"""<div style="margin-bottom:7px;padding:9px 12px;border-radius:8px;
-                        border-left:4px solid {accent};background:#fafafa;
-                        border:1px solid #eee;border-left:4px solid {accent}">
-                      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-                        <span style="font-size:11px;font-weight:700;color:{accent}">{emoji} {t['cant_medios']} medios</span>
-                        <span>{ole_dot}</span>
-                        <span style="font-size:10px;color:#94a3b8">{t['nac']}🇦🇷 {t['intl']}🌍</span>
-                        <div style="flex:1;height:5px;background:#e2e8f0;border-radius:3px;overflow:hidden">
-                          <div style="width:{bar_pct}%;height:100%;background:{accent}"></div>
-                        </div>
-                        <span style="font-size:10px;color:#94a3b8">{bar_pct}%</span>
-                      </div>
-                      <div style="font-size:13px;font-weight:600;color:#0f172a;
-                          line-height:1.4;margin-bottom:5px">{t['titulo'][:110]}</div>
-                      <div style="display:flex;flex-wrap:wrap;gap:2px">{chips}</div>
-                    </div>""",
+                    f'<div style="margin-top:8px;font-size:12px;line-height:2;color:#374151">{top}</div>',
                     unsafe_allow_html=True,
                 )
 
-                with st.expander("▸ ver notas", expanded=False):
-                    for item in t["noticias"]:
-                        n, f = item["noticia"], item["fuente"]
-                        badge = (f'<span style="color:{f["color"]};font-size:10px;font-weight:700;'
-                                 f'background:{f["color"]}18;padding:1px 6px;border-radius:3px">'
-                                 f'{f["nombre"]}</span>')
-                        if n.get("url"):
-                            st.markdown(f'{badge} [{n["titulo"]}]({n["url"]})', unsafe_allow_html=True)
-                        else:
-                            st.markdown(f'{badge} {n["titulo"]}', unsafe_allow_html=True)
+        with ct1:
+            _cloud_section(nac_ids, "#00a846")
+        with ct2:
+            _cloud_section(intl_ids, "#1a7fc1")
 
-        with col_cloud:
-            st.markdown("#### 🔤 Nube de palabras")
-            nac_ids  = [f["id"] for f in FUENTES_NAC]
-            intl_ids = [f["id"] for f in FUENTES_INT]
+        st.divider()
 
-            ct1, ct2 = st.tabs(["🇦🇷 Nacionales", "🌍 Internacionales"])
+        # ── RANKING DE TEMAS (ancho completo, abajo) ─────────────────────────
+        st.markdown("#### 📊 Ranking de temas")
+        filtro = st.radio(
+            "Filtrar por",
+            ["Sin Olé ❌", "Con Olé ✅", "🔥 Hot", "Todos"],
+            horizontal=True, key="filtro_tend",
+        )
+        lista = tendencias[:80]
+        if filtro == "Sin Olé ❌":   lista = [t for t in lista if not t["tiene_ole"]]
+        elif filtro == "Con Olé ✅": lista = [t for t in lista if t["tiene_ole"]]
+        elif filtro == "🔥 Hot":     lista = [t for t in lista if t["cant_medios"] / total_fuentes >= 0.20]
 
-            with ct1:
-                freq_nac = build_word_freq(nac_ids)
-                st.markdown(html_word_cloud(freq_nac, "#00a846"), unsafe_allow_html=True)
-                if freq_nac:
-                    top = " &nbsp;·&nbsp; ".join(
-                        f'<b>{w}</b> <span style="color:#94a3b8;font-size:11px">×{c}</span>'
-                        for w, c in freq_nac[:10]
-                    )
-                    st.markdown(
-                        f'<div style="margin-top:8px;font-size:12px;line-height:2;color:#374151">{top}</div>',
-                        unsafe_allow_html=True,
-                    )
+        st.caption(f"{len(lista)} temas · similitud Jaccard ≥ {SIMILITUD_UMBRAL}")
 
-            with ct2:
-                freq_int = build_word_freq(intl_ids)
-                st.markdown(html_word_cloud(freq_int, "#1a7fc1"), unsafe_allow_html=True)
-                if freq_int:
-                    top = " &nbsp;·&nbsp; ".join(
-                        f'<b>{w}</b> <span style="color:#94a3b8;font-size:11px">×{c}</span>'
-                        for w, c in freq_int[:10]
-                    )
-                    st.markdown(
-                        f'<div style="margin-top:8px;font-size:12px;line-height:2;color:#374151">{top}</div>',
-                        unsafe_allow_html=True,
-                    )
+        for t in lista[:50]:
+            pct = t["cant_medios"] / total_fuentes
+            bar_pct = int(pct * 100)
+            if pct >= 0.5:    accent, emoji = "#dc2626", "🔥🔥"
+            elif pct >= 0.30: accent, emoji = "#ea580c", "🔥"
+            elif pct >= 0.15: accent, emoji = "#ca8a04", "▲"
+            else:             accent, emoji = "#3b82f6", "·"
+
+            ole_dot = "🟢" if t["tiene_ole"] else "🔴"
+
+            chips = "".join(
+                f'<span style="font-size:9px;font-weight:700;padding:1px 5px;'
+                f'border-radius:3px;background:{item["fuente"]["color"]}18;'
+                f'color:{item["fuente"]["color"]};border:1px solid {item["fuente"]["color"]}30">'
+                f'{item["fuente"]["nombre"]}</span> '
+                for item in t["noticias"]
+            )
+
+            st.markdown(
+                f"""<div style="margin-bottom:7px;padding:9px 12px;border-radius:8px;
+                    border-left:4px solid {accent};background:#fafafa;
+                    border:1px solid #eee;border-left:4px solid {accent}">
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                    <span style="font-size:11px;font-weight:700;color:{accent}">{emoji} {t['cant_medios']} medios</span>
+                    <span>{ole_dot}</span>
+                    <span style="font-size:10px;color:#94a3b8">{t['nac']}🇦🇷 {t['intl']}🌍</span>
+                    <div style="flex:1;height:5px;background:#e2e8f0;border-radius:3px;overflow:hidden">
+                      <div style="width:{bar_pct}%;height:100%;background:{accent}"></div>
+                    </div>
+                    <span style="font-size:10px;color:#94a3b8">{bar_pct}%</span>
+                  </div>
+                  <div style="font-size:14px;font-weight:600;color:#0f172a;
+                      line-height:1.4;margin-bottom:5px">{t['titulo'][:130]}</div>
+                  <div style="display:flex;flex-wrap:wrap;gap:2px">{chips}</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+
+            with st.expander("▸ ver notas", expanded=False):
+                for item in t["noticias"]:
+                    n, f = item["noticia"], item["fuente"]
+                    badge = (f'<span style="color:{f["color"]};font-size:10px;font-weight:700;'
+                             f'background:{f["color"]}18;padding:1px 6px;border-radius:3px">'
+                             f'{f["nombre"]}</span>')
+                    if n.get("url"):
+                        st.markdown(f'{badge} [{n["titulo"]}]({n["url"]})', unsafe_allow_html=True)
+                    else:
+                        st.markdown(f'{badge} {n["titulo"]}', unsafe_allow_html=True)
 
 # ─── TAB IA ──────────────────────────────────────────────────────────────────
 with tab_ia:
