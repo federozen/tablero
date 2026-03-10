@@ -697,8 +697,9 @@ Generá un informe editorial en español rioplatense:
 Separar secciones con ───────. Sé muy específico y accionable."""
 
 # ─── SCRAPING DE CUERPO DE NOTA ──────────────────────────────────────────────
-def _extraer_cuerpo_nota(url: str, max_chars: int = 1800) -> str:
-    """Intenta extraer los primeros párrafos del cuerpo de una nota. Retorna '' si falla."""
+def _extraer_cuerpo_nota(url: str, max_chars: int = 900) -> str:
+    """Intenta extraer los primeros párrafos del cuerpo de una nota. Retorna '' si falla.
+    Limitado a 900 chars por nota para controlar el gasto de tokens de entrada."""
     if not url or not url.startswith("http"):
         return ""
     try:
@@ -724,13 +725,13 @@ def _extraer_cuerpo_nota(url: str, max_chars: int = 1800) -> str:
             el = soup.select_one(sel)
             if el:
                 parrafos = [p.get_text(" ", strip=True) for p in el.find_all("p") if len(p.get_text(strip=True)) > 40]
-                texto = "\n".join(parrafos[:8])
+                texto = "\n".join(parrafos[:5])  # máx 5 párrafos por nota
                 if len(texto) > 200:
                     break
         if not texto:
             # Último recurso: todos los <p> largos de la página
             parrafos = [p.get_text(" ", strip=True) for p in soup.find_all("p") if len(p.get_text(strip=True)) > 60]
-            texto = "\n".join(parrafos[:6])
+            texto = "\n".join(parrafos[:4])
         return texto[:max_chars].strip()
     except Exception:
         return ""
@@ -794,14 +795,45 @@ def prompt_nota_rapida(tema: str, titulares_enriquecidos: list, estilo: str, tip
         )
 
     estilos = {
-        "Informativa": "Nota informativa directa, estilo agencia, sin opinión.",
-        "Analítica":   "Nota analítica con contexto, antecedentes y proyección.",
-        "Urgente/Flash": "Nota flash de máximo 3 párrafos, verbo en presente, sin adornos.",
+        "Informativa": (
+            "Estilo agencia de noticias argentina (Télam/NA). "
+            "Tono directo, neutro, sin opinión ni adjetivos innecesarios. "
+            "Verbos en pasado o presente simple. Oraciones cortas. "
+            "Los datos concretos van primero, el contexto después."
+        ),
+        "Analítica": (
+            "Estilo agencia argentina con profundidad. "
+            "Tono directo y neutro pero con contexto, antecedentes y proyección. "
+            "Cada afirmación tiene respaldo en las fuentes. "
+            "Párrafos más largos, estructura de causa-efecto."
+        ),
+        "Urgente/Flash": (
+            "Estilo despacho urgente de agencia argentina. "
+            "Máximo 3 párrafos muy cortos. Verbo en presente. "
+            "Solo el dato central, sin contexto. "
+            "Primera oración = toda la noticia en una línea."
+        ),
     }
     tipos = {
-        "Nota completa":              "Escribí lead, desarrollo (3-4 párrafos) y cierre con proyección.",
-        "Solo titulares alternativos": "Generá 8 titulares alternativos: 2 impactantes, 2 SEO, 2 para redes sociales, 2 neutrales.",
-        "Esqueleto + ángulos":        "Generá un esqueleto con secciones numeradas y 3 ángulos posibles para desarrollar.",
+        "Nota completa": (
+            "Nota con subtítulos (SIN lead/cierre clásico de manual). Estructura:\n"
+            "- Primer párrafo suelto: el hecho central en 2-3 oraciones directas, sin subtítulo.\n"
+            "- Luego 3 o 4 secciones, cada una con subtítulo informativo en negrita (## Subtítulo), "
+            "seguido de 2-3 párrafos de 60-80 palabras.\n"
+            "- La nota entera: entre 400 y 550 palabras.\n"
+            "- Los subtítulos deben ser concretos y periodísticos, no genéricos "
+            "(ej: '## La lesión y los plazos de recuperación' en vez de '## Contexto')."
+        ),
+        "Solo titulares alternativos": (
+            "Generá 8 titulares alternativos: 2 impactantes, 2 SEO, "
+            "2 para redes sociales (con gancho), 2 estilo agencia neutro. "
+            "Para cada uno agregá una línea corta explicando el enfoque."
+        ),
+        "Esqueleto + ángulos": (
+            "Esqueleto con subtítulos numerados (## 1. ..., ## 2. ...) "
+            "y una línea describiendo qué información va en cada sección. "
+            "Al final, 3 ángulos posibles con título sugerido para cada uno."
+        ),
     }
 
     if tiene_info_real:
@@ -889,9 +921,56 @@ ENTREGABLE: {tipos.get(tipo_nota, tipos["Nota completa"])}
 
 {bloque_fuentes}
 
-Respondé en español rioplatense. Usá voseo. Sé concreto y periodístico.
+Escribí en español rioplatense con voseo. Tono de agencia argentina: directo, concreto, sin grandilocuencia.
+Evitá frases como "en este contexto", "cabe destacar", "vale la pena mencionar".
+No uses adjetivos valorativos ("increíble", "impresionante", "histórico") salvo que estén en la fuente.
+Nunca uses "lead", "bajada" ni ningún término de manual de redacción en el texto de la nota.
 """
 
+
+def prompt_tono_editorial(query: str, titulares_filtrados: list) -> str:
+    bloque = "\n".join(
+        f'[{item["fuente"]["nombre"]}] {item["noticia"]["titulo"]}'
+        for item in titulares_filtrados
+    )
+    return f"""Analizá el tono editorial de estos titulares sobre "{query}".
+
+TITULARES ({len(titulares_filtrados)} en total):
+{bloque}
+
+Respondé ÚNICAMENTE con un objeto JSON válido, sin texto antes ni después, sin backticks.
+El JSON debe tener exactamente esta estructura:
+
+{{
+  "resumen": "una oración que describe el tono general de la cobertura",
+  "distribucion": {{
+    "positivo": 0,
+    "negativo": 0,
+    "neutro": 0,
+    "alarmista": 0,
+    "expectante": 0
+  }},
+  "por_medio": [
+    {{
+      "medio": "nombre del medio",
+      "tono": "positivo|negativo|neutro|alarmista|expectante",
+      "titular": "el titular analizado",
+      "razon": "una línea explicando por qué ese tono"
+    }}
+  ],
+  "patrones": [
+    "patrón editorial detectado 1",
+    "patrón editorial detectado 2"
+  ]
+}}
+
+Tonos posibles:
+- positivo: elogio, logro, buena noticia
+- negativo: crítica, fracaso, escándalo, mala noticia
+- neutro: informativo puro, sin carga valorativa
+- alarmista: urgencia, crisis, peligro, dramatismo
+- expectante: incertidumbre, espera, "podría", "se espera"
+"""
 
 if "resultados" not in st.session_state:
     st.session_state.resultados = {}
@@ -911,6 +990,10 @@ if "nota_rapida_titulares" not in st.session_state:
     st.session_state.nota_rapida_titulares = []
 if "nota_rapida_modo" not in st.session_state:
     st.session_state.nota_rapida_modo = ""
+if "sentimiento_resultado" not in st.session_state:
+    st.session_state.sentimiento_resultado = None
+if "sentimiento_query" not in st.session_state:
+    st.session_state.sentimiento_query = ""
 
 # Cache de imágenes a nivel de módulo (accesible desde threads)
 # Se mantiene mientras el proceso de Streamlit esté vivo
@@ -1192,13 +1275,14 @@ ole_analisis = st.session_state.ole_analisis
 tendencias = st.session_state.tendencias
 
 # ─── TABS PRINCIPALES ────────────────────────────────────────────────────────
-tab_nac, tab_int, tab_ole, tab_tend, tab_ia, tab_nota = st.tabs([
+tab_nac, tab_int, tab_ole, tab_tend, tab_ia, tab_nota, tab_sent = st.tabs([
     f"🇦🇷 Nacionales ({sum(len(resultados.get(f['id'],[])) for f in FUENTES_NAC)})",
     f"🌍 Internacionales ({sum(len(resultados.get(f['id'],[])) for f in FUENTES_INT)})",
     "⭐ Olé vs Todos",
     f"📊 Tendencias ({len(tendencias)})",
     "🤖 Análisis IA",
     "✍️ Nota Rápida",
+    "🌡️ Tono Editorial",
 ])
 
 # ─── TAB NACIONALES ──────────────────────────────────────────────────────────
@@ -1513,16 +1597,98 @@ with tab_tend:
                 unsafe_allow_html=True,
             )
 
-            with st.expander("▸ ver notas", expanded=False):
-                for item in t["noticias"]:
-                    n, f = item["noticia"], item["fuente"]
-                    badge = (f'<span style="color:{f["color"]};font-size:10px;font-weight:700;'
-                             f'background:{f["color"]}18;padding:1px 6px;border-radius:3px">'
-                             f'{f["nombre"]}</span>')
-                    if n.get("url"):
-                        st.markdown(f'{badge} [{n["titulo"]}]({n["url"]})', unsafe_allow_html=True)
+            # ── Botones de acción por card ────────────────────────────────────
+            t_idx = lista.index(t)
+            btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 4])
+            with btn_col1:
+                ver_notas = st.button("▸ Ver notas", key=f"vernotas_{t_idx}", use_container_width=True)
+            with btn_col2:
+                analizar_tono = st.button("🌡️ Tono", key=f"tono_{t_idx}", use_container_width=True)
+
+            if ver_notas:
+                st.session_state[f"open_notas_{t_idx}"] = not st.session_state.get(f"open_notas_{t_idx}", False)
+            if analizar_tono:
+                st.session_state[f"open_tono_{t_idx}"] = not st.session_state.get(f"open_tono_{t_idx}", False)
+                if st.session_state[f"open_tono_{t_idx}"]:
+                    st.session_state[f"tono_resultado_{t_idx}"] = None  # reset para nueva búsqueda
+
+            if st.session_state.get(f"open_notas_{t_idx}", False):
+                with st.container():
+                    for item in t["noticias"]:
+                        n, f = item["noticia"], item["fuente"]
+                        badge = (f'<span style="color:{f["color"]};font-size:10px;font-weight:700;'
+                                 f'background:{f["color"]}18;padding:1px 6px;border-radius:3px">'
+                                 f'{f["nombre"]}</span>')
+                        if n.get("url"):
+                            st.markdown(f'{badge} [{n["titulo"]}]({n["url"]})', unsafe_allow_html=True)
+                        else:
+                            st.markdown(f'{badge} {n["titulo"]}', unsafe_allow_html=True)
+
+            if st.session_state.get(f"open_tono_{t_idx}", False):
+                tono_key = f"tono_resultado_{t_idx}"
+                if st.session_state.get(tono_key) is None:
+                    if not api_key:
+                        st.warning("Ingresá tu API key en el panel izquierdo para analizar el tono.")
                     else:
-                        st.markdown(f'{badge} {n["titulo"]}', unsafe_allow_html=True)
+                        with st.spinner("Analizando tono editorial..."):
+                            try:
+                                prompt = prompt_tono_editorial(t["titulo"], t["noticias"][:40])
+                                raw_json = call_claude(prompt, api_key, 1200)
+                                clean = raw_json.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+                                st.session_state[tono_key] = json.loads(clean)
+                            except Exception as e:
+                                st.session_state[tono_key] = {"error": str(e)}
+
+                res = st.session_state.get(tono_key)
+                if res and "error" not in res:
+                    TONO_CFG = {
+                        "positivo":  ("🟢", "#16a34a", "#f0fdf4"),
+                        "negativo":  ("🔴", "#dc2626", "#fef2f2"),
+                        "neutro":    ("⚪", "#6b7280", "#f9fafb"),
+                        "alarmista": ("🟡", "#d97706", "#fffbeb"),
+                        "expectante":("🔵", "#2563eb", "#eff6ff"),
+                    }
+                    with st.container():
+                        st.markdown(
+                            f'<div style="padding:10px 14px;border-radius:8px;background:#f0f9ff;'
+                            f'border-left:4px solid #0ea5e9;font-size:14px;margin:6px 0">'
+                            f'📝 {res.get("resumen","")}</div>',
+                            unsafe_allow_html=True,
+                        )
+                        dist = res.get("distribucion", {})
+                        total_cl = sum(dist.values()) or 1
+                        dcols = st.columns(5)
+                        for i, (tono, count) in enumerate(dist.items()):
+                            em, col, bg = TONO_CFG.get(tono, ("⚫","#374151","#f9fafb"))
+                            pct = int(count / total_cl * 100)
+                            with dcols[i]:
+                                st.markdown(
+                                    f'<div style="text-align:center;padding:8px 4px;border-radius:7px;'
+                                    f'background:{bg};border:1px solid {col}30">'
+                                    f'<div style="font-size:18px">{em}</div>'
+                                    f'<div style="font-size:17px;font-weight:700;color:{col}">{count}</div>'
+                                    f'<div style="font-size:10px;color:#6b7280;text-transform:capitalize">{tono}</div>'
+                                    f'<div style="font-size:9px;color:#9ca3af">{pct}%</div>'
+                                    f'</div>',
+                                    unsafe_allow_html=True,
+                                )
+                        for item in res.get("por_medio", []):
+                            tono = item.get("tono", "neutro")
+                            em, col, bg = TONO_CFG.get(tono, ("⚫","#374151","#f9fafb"))
+                            st.markdown(
+                                f'<div style="display:flex;gap:8px;align-items:flex-start;'
+                                f'padding:7px 10px;margin-top:4px;border-radius:6px;'
+                                f'background:{bg};border:1px solid {col}20">'
+                                f'<span style="font-size:16px;flex-shrink:0">{em}</span>'
+                                f'<div><span style="font-size:10px;font-weight:700;color:{col};text-transform:uppercase">'
+                                f'{item.get("medio","")} · {tono}</span><br>'
+                                f'<span style="font-size:12px;color:#1e293b">{item.get("titular","")}</span><br>'
+                                f'<span style="font-size:11px;color:#64748b;font-style:italic">{item.get("razon","")}</span>'
+                                f'</div></div>',
+                                unsafe_allow_html=True,
+                            )
+                elif res and "error" in res:
+                    st.error(f"Error al analizar: {res['error']}")
 
 # ─── TAB IA ──────────────────────────────────────────────────────────────────
 with tab_ia:
@@ -1715,7 +1881,7 @@ with tab_nota:
             with st.spinner("✦ Redactando con Claude..."):
                 try:
                     prompt = prompt_nota_rapida(tema_elegido, titulares_enriquecidos, estilo_nota, tipo_nota)
-                    st.session_state.nota_rapida = call_claude(prompt, api_key_nota, 2200)
+                    st.session_state.nota_rapida = call_claude(prompt, api_key_nota, 3500)
                     st.session_state.nota_rapida_titulares = titulares_enriquecidos
                     ok_final = sum(1 for t in titulares_enriquecidos if t.get("ok"))
                     modo = "con cuerpo completo" if ok_final > 0 else "esqueleto seguro (sin cuerpo)"
@@ -1827,6 +1993,163 @@ with tab_nota:
     else:
         st.info("El borrador aparecerá acá una vez que lo generes.")
 
+
+# ─── TAB TONO EDITORIAL ─────────────────────────────────────────────────────
+with tab_sent:
+    st.markdown("### 🌡️ Tono Editorial")
+    st.caption("Analizá cómo distintos medios cubren un tema, jugador o club con IA.")
+
+    col_s1, col_s2 = st.columns([3, 1])
+    with col_s1:
+        query_sent = st.text_input(
+            "Buscá un tema, jugador, club o DT",
+            placeholder='Ej: Messi, Boca, River, Milito, Selección...',
+            key="sent_query_input",
+        )
+    with col_s2:
+        fuente_sent = st.selectbox(
+            "Fuentes",
+            ["Todas", "Solo nacionales", "Solo internacionales"],
+            key="sent_fuentes",
+        )
+
+    # Filtrar titulares que mencionan la query
+    titulares_sent = []
+    if query_sent.strip():
+        q = query_sent.strip().lower()
+        fuentes_pool = TODAS_FUENTES
+        if fuente_sent == "Solo nacionales":
+            fuentes_pool = FUENTES_NAC
+        elif fuente_sent == "Solo internacionales":
+            fuentes_pool = FUENTES_INT
+
+        for f in fuentes_pool:
+            for n in resultados.get(f["id"], []):
+                if q in n["titulo"].lower():
+                    titulares_sent.append({"fuente": f, "noticia": n})
+
+        if titulares_sent:
+            st.caption(f"Se encontraron **{len(titulares_sent)}** titulares que mencionan *{query_sent}*")
+            with st.expander(f"Ver los {len(titulares_sent)} titulares encontrados", expanded=False):
+                for item in titulares_sent:
+                    f = item["fuente"]
+                    n = item["noticia"]
+                    badge = (f'<span style="font-size:10px;font-weight:700;padding:1px 6px;'
+                             f'border-radius:3px;background:{f["color"]}18;color:{f["color"]};'
+                             f'border:1px solid {f["color"]}30">{f["nombre"]}</span>')
+                    st.markdown(f'{badge} {n["titulo"]}', unsafe_allow_html=True)
+        elif query_sent.strip():
+            st.warning(f'No se encontraron titulares que mencionen "{query_sent}". Probá con otro término.')
+
+    st.divider()
+
+    col_sb1, col_sb2 = st.columns([1, 3])
+    with col_sb1:
+        analizar_sent = st.button(
+            "🌡️ Analizar tono",
+            type="primary",
+            use_container_width=True,
+            disabled=not titulares_sent,
+            key="btn_analizar_sent",
+        )
+    if analizar_sent:
+        if not api_key:
+            st.error("Ingresá tu API key en el panel izquierdo.")
+        elif not titulares_sent:
+            st.error("No hay titulares para analizar.")
+        else:
+            with st.spinner(f"Analizando tono de {len(titulares_sent)} titulares..."):
+                try:
+                    prompt = prompt_tono_editorial(query_sent, titulares_sent[:40])
+                    raw_json = call_claude(prompt, api_key, 1200)
+                    # Limpiar posibles backticks
+                    clean = raw_json.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+                    resultado = json.loads(clean)
+                    st.session_state.sentimiento_resultado = resultado
+                    st.session_state.sentimiento_query = query_sent
+                except json.JSONDecodeError:
+                    st.error("Error al parsear la respuesta. Intentá de nuevo.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+    # ── Mostrar resultado ────────────────────────────────────────────────────
+    if st.session_state.sentimiento_resultado:
+        res = st.session_state.sentimiento_resultado
+        q_display = st.session_state.sentimiento_query
+
+        st.markdown(f"#### Resultado para: *{q_display}*")
+
+        # Resumen
+        st.markdown(
+            f'<div style="padding:12px 16px;border-radius:8px;background:#f0f9ff;'
+            f'border-left:4px solid #0ea5e9;font-size:15px;margin-bottom:16px">'
+            f'📝 {res.get("resumen","")}</div>',
+            unsafe_allow_html=True,
+        )
+
+        # Distribución
+        dist = res.get("distribucion", {})
+        total_cl = sum(dist.values()) or 1
+        TONO_CFG = {
+            "positivo":  ("🟢", "#16a34a", "#f0fdf4"),
+            "negativo":  ("🔴", "#dc2626", "#fef2f2"),
+            "neutro":    ("⚪", "#6b7280", "#f9fafb"),
+            "alarmista": ("🟡", "#d97706", "#fffbeb"),
+            "expectante":("🔵", "#2563eb", "#eff6ff"),
+        }
+        st.markdown("##### Distribución de tono")
+        cols_dist = st.columns(5)
+        for i, (tono, count) in enumerate(dist.items()):
+            emoji, color, bg = TONO_CFG.get(tono, ("⚫", "#374151", "#f9fafb"))
+            pct = int(count / total_cl * 100)
+            with cols_dist[i]:
+                st.markdown(
+                    f'<div style="text-align:center;padding:10px 6px;border-radius:8px;'
+                    f'background:{bg};border:1px solid {color}30">'
+                    f'<div style="font-size:22px">{emoji}</div>'
+                    f'<div style="font-size:20px;font-weight:700;color:{color}">{count}</div>'
+                    f'<div style="font-size:11px;color:#6b7280;text-transform:capitalize">{tono}</div>'
+                    f'<div style="font-size:10px;color:#9ca3af">{pct}%</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+        st.markdown("##### Tono por medio")
+        por_medio = res.get("por_medio", [])
+        for item in por_medio:
+            tono = item.get("tono", "neutro")
+            emoji, color, bg = TONO_CFG.get(tono, ("⚫", "#374151", "#f9fafb"))
+            medio = item.get("medio", "")
+            titular = item.get("titular", "")
+            razon = item.get("razon", "")
+            st.markdown(
+                f'<div style="display:flex;gap:10px;align-items:flex-start;'
+                f'padding:9px 12px;margin-bottom:5px;border-radius:7px;'
+                f'background:{bg};border:1px solid {color}20">'
+                f'<span style="font-size:18px;flex-shrink:0">{emoji}</span>'
+                f'<div style="flex:1">'
+                f'<span style="font-size:11px;font-weight:700;color:{color};text-transform:uppercase">'
+                f'{medio} · {tono}</span><br>'
+                f'<span style="font-size:13px;color:#1e293b">{titular}</span><br>'
+                f'<span style="font-size:11px;color:#64748b;font-style:italic">{razon}</span>'
+                f'</div></div>',
+                unsafe_allow_html=True,
+            )
+
+        if res.get("patrones"):
+            st.markdown("##### Patrones detectados")
+            for p in res["patrones"]:
+                st.markdown(f"- {p}")
+
+        # Descarga
+        st.divider()
+        export = json.dumps(res, ensure_ascii=False, indent=2)
+        st.download_button(
+            "📥 Descargar análisis JSON",
+            export,
+            file_name=f"tono_{q_display}_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+            mime="application/json",
+        )
 
 st.divider()
 st.caption(
