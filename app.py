@@ -696,7 +696,40 @@ Generá un informe editorial en español rioplatense:
 
 Separar secciones con ───────. Sé muy específico y accionable."""
 
-# ─── SESSION STATE ────────────────────────────────────────────────────────────
+def prompt_nota_rapida(tema: str, titulares: list, estilo: str, tipo_nota: str) -> str:
+    bloque = "\n".join(
+        f"  [{item['fuente']['nombre']}] {item['noticia']['titulo']}"
+        + (f" → {item['noticia']['url']}" if item['noticia'].get('url') else "")
+        for item in titulares[:20]
+    )
+
+    estilos = {
+        "Informativa": "Nota informativa directa, estilo agencia, sin opinión.",
+        "Analítica": "Nota analítica con contexto, antecedentes y proyección.",
+        "Urgente/Flash": "Nota flash de máximo 3 párrafos, verbo en presente, sin adornos.",
+    }
+    tipos = {
+        "Nota completa": "Incluí lead, desarrollo (3-4 párrafos) y cierre con proyección.",
+        "Solo titulares alternativos": "Generá 8 titulares alternativos: 2 impactantes, 2 SEO, 2 para redes sociales, 2 neutrales.",
+        "Esqueleto + ángulos": "Generá un esqueleto con secciones y 3 ángulos alternativos para desarrollar.",
+    }
+
+    return f"""Sos un redactor deportivo de un portal argentino. Tu tarea es redactar sobre este tema:
+
+TEMA: {tema}
+
+TITULARES DE LA COMPETENCIA ({len(titulares)} medios):
+{bloque}
+
+ESTILO: {estilos.get(estilo, estilos["Informativa"])}
+ENTREGABLE: {tipos.get(tipo_nota, tipos["Nota completa"])}
+
+Respondé en español rioplatense. Usá voseo. Sé concreto y periodístico.
+No inventes datos que no estén en los titulares — si falta info, marcalo como [DATO A CONFIRMAR].
+Al final, incluí una sección "ÁNGULOS ALTERNATIVOS" con 2 enfoques distintos para trabajar la nota.
+"""
+
+
 if "resultados" not in st.session_state:
     st.session_state.resultados = {}
 if "ultima_act" not in st.session_state:
@@ -709,6 +742,10 @@ if "ole_analisis" not in st.session_state:
     st.session_state.ole_analisis = None
 if "tendencias" not in st.session_state:
     st.session_state.tendencias = []
+if "nota_rapida" not in st.session_state:
+    st.session_state.nota_rapida = ""
+if "nota_rapida_titulares" not in st.session_state:
+    st.session_state.nota_rapida_titulares = []
 
 # Cache de imágenes a nivel de módulo (accesible desde threads)
 # Se mantiene mientras el proceso de Streamlit esté vivo
@@ -990,12 +1027,13 @@ ole_analisis = st.session_state.ole_analisis
 tendencias = st.session_state.tendencias
 
 # ─── TABS PRINCIPALES ────────────────────────────────────────────────────────
-tab_nac, tab_int, tab_ole, tab_tend, tab_ia = st.tabs([
+tab_nac, tab_int, tab_ole, tab_tend, tab_ia, tab_nota = st.tabs([
     f"🇦🇷 Nacionales ({sum(len(resultados.get(f['id'],[])) for f in FUENTES_NAC)})",
     f"🌍 Internacionales ({sum(len(resultados.get(f['id'],[])) for f in FUENTES_INT)})",
     "⭐ Olé vs Todos",
     f"📊 Tendencias ({len(tendencias)})",
     "🤖 Análisis IA",
+    "✍️ Nota Rápida",
 ])
 
 # ─── TAB NACIONALES ──────────────────────────────────────────────────────────
@@ -1384,7 +1422,152 @@ with tab_ia:
                 else:
                     st.markdown(f'{badge} {n["titulo"]}', unsafe_allow_html=True)
 
-# ─── FOOTER ──────────────────────────────────────────────────────────────────
+# ─── TAB NOTA RÁPIDA ─────────────────────────────────────────────────────────
+with tab_nota:
+    st.markdown("### ✍️ Asistente de Nota Rápida")
+    st.caption("Elegí un tema del ranking, seleccioná el estilo y generá un borrador con IA.")
+
+    col_nota1, col_nota2 = st.columns([2, 1])
+
+    with col_nota1:
+        # Modo de selección del tema
+        modo_tema = st.radio(
+            "¿Cómo querés elegir el tema?",
+            ["📊 Desde el ranking de tendencias", "✏️ Escribir tema libre"],
+            horizontal=True,
+            key="nota_modo_tema",
+        )
+
+        titulares_seleccionados = []
+
+        if modo_tema == "📊 Desde el ranking de tendencias":
+            if not tendencias:
+                st.warning("Primero actualizá las fuentes para cargar tendencias.")
+            else:
+                opciones_temas = [
+                    f"[{t['cant_medios']} medios] {t['titulo'][:90]}"
+                    for t in tendencias[:40]
+                ]
+                tema_idx = st.selectbox(
+                    "Tema del ranking",
+                    range(len(opciones_temas)),
+                    format_func=lambda i: opciones_temas[i],
+                    key="nota_tema_idx",
+                )
+                tema_elegido = tendencias[tema_idx]["titulo"]
+                titulares_seleccionados = tendencias[tema_idx]["noticias"]
+
+                # Mostrar titulares agrupados
+                with st.expander(f"📋 {len(titulares_seleccionados)} titulares agrupados en este tema", expanded=False):
+                    for item in titulares_seleccionados:
+                        f = item["fuente"]
+                        n = item["noticia"]
+                        badge = (
+                            f'<span style="font-size:10px;font-weight:700;padding:1px 6px;'
+                            f'border-radius:3px;background:{f["color"]}18;color:{f["color"]};'
+                            f'border:1px solid {f["color"]}30">{f["nombre"]}</span>'
+                        )
+                        if n.get("url"):
+                            st.markdown(f'{badge} [{n["titulo"]}]({n["url"]})', unsafe_allow_html=True)
+                        else:
+                            st.markdown(f'{badge} {n["titulo"]}', unsafe_allow_html=True)
+        else:
+            tema_elegido = st.text_input(
+                "Escribí el tema de la nota",
+                placeholder="Ej: Lesión de Lautaro Martínez antes de la Copa América",
+                key="nota_tema_libre",
+            )
+            titulares_libres = st.text_area(
+                "Pegá titulares de referencia (uno por línea, opcional)",
+                placeholder="Lautaro Martínez se lesionó en el entrenamiento\nEl Toro en duda para el próximo partido...",
+                height=120,
+                key="nota_titulares_libres",
+            )
+            if titulares_libres.strip():
+                fuente_generica = {"nombre": "Referencia", "color": "#666666", "id": "manual"}
+                titulares_seleccionados = [
+                    {"fuente": fuente_generica, "noticia": {"titulo": t.strip(), "url": None}}
+                    for t in titulares_libres.strip().split("\n") if t.strip()
+                ]
+
+    with col_nota2:
+        estilo_nota = st.selectbox(
+            "Estilo de redacción",
+            ["Informativa", "Analítica", "Urgente/Flash"],
+            key="nota_estilo",
+        )
+        tipo_nota = st.selectbox(
+            "¿Qué necesitás?",
+            ["Nota completa", "Solo titulares alternativos", "Esqueleto + ángulos"],
+            key="nota_tipo",
+        )
+
+    st.divider()
+
+    # Botón generar
+    api_key_nota = api_key  # reutilizar la key del sidebar
+    puede_generar = bool(tema_elegido if modo_tema == "✏️ Escribir tema libre" else (tendencias and True))
+
+    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
+    with col_btn1:
+        generar = st.button(
+            "✦ Generar con IA",
+            type="primary",
+            use_container_width=True,
+            disabled=not puede_generar,
+            key="btn_generar_nota",
+        )
+    with col_btn2:
+        if st.button("🗑 Limpiar", use_container_width=True, key="btn_limpiar_nota"):
+            st.session_state.nota_rapida = ""
+            st.rerun()
+
+    if generar:
+        if not api_key_nota:
+            st.error("Ingresá tu API key en el panel izquierdo para usar la IA.")
+        elif not tema_elegido:
+            st.error("Escribí o seleccioná un tema primero.")
+        else:
+            with st.spinner("Redactando con Claude..."):
+                try:
+                    prompt = prompt_nota_rapida(tema_elegido, titulares_seleccionados, estilo_nota, tipo_nota)
+                    st.session_state.nota_rapida = call_claude(prompt, api_key_nota, 2000)
+                    st.session_state.nota_rapida_titulares = titulares_seleccionados
+                    st.success("✔ Borrador generado")
+                except Exception as e:
+                    st.error(f"Error al llamar a Claude: {e}")
+
+    # Resultado
+    if st.session_state.nota_rapida:
+        st.markdown("#### 📄 Borrador generado")
+        nota_editada = st.text_area(
+            "Podés editar el texto antes de copiarlo",
+            value=st.session_state.nota_rapida,
+            height=520,
+            label_visibility="collapsed",
+            key="nota_textarea",
+        )
+        col_dl1, col_dl2 = st.columns(2)
+        with col_dl1:
+            st.download_button(
+                "📥 Descargar .txt",
+                nota_editada,
+                file_name=f"nota_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+        with col_dl2:
+            st.download_button(
+                "📥 Descargar .md",
+                nota_editada,
+                file_name=f"nota_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+    else:
+        st.info("El borrador aparecerá acá una vez que lo generes.")
+
+
 st.divider()
 st.caption(
     f"Monitor Deportivo Pro v1.0 (Streamlit) · "
