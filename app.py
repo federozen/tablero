@@ -18,6 +18,8 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import anthropic
+import random
+import math
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -53,9 +55,9 @@ FUENTES_INT = [
     {"id": "mundodep",  "nombre": "Mundo Deportivo",  "url": "https://www.mundodeportivo.com/",                 "color": "#1565c0"},
     {"id": "sport",     "nombre": "Sport",            "url": "https://www.sport.es/es/",                        "color": "#cc0020"},
     {"id": "globo",     "nombre": "Globoesporte",     "url": "https://ge.globo.com/",                           "color": "#007a2f"},
-    {"id": "lance",     "nombre": "Lance!",           "url": "https://lance.com.br/feed/",                      "color": "#005bac", "es_rss": True},
+    {"id": "espnbr",    "nombre": "ESPN Brasil",      "url": "https://www.espnbrasil.com.br/futebol/",          "color": "#cc0000"},
     {"id": "placar",    "nombre": "Placar",           "url": "https://placar.com.br/feed/",                     "color": "#c00040", "es_rss": True},
-    {"id": "tmw",       "nombre": "TuttoMercato",     "url": "https://www.tuttomercatoweb.com/",                "color": "#003399"},
+    {"id": "gazzetta",  "nombre": "Gazzetta Sport",   "url": "https://www.gazzetta.it/Calcio/",                 "color": "#e8000a"},
     {"id": "corriere",  "nombre": "Corriere Sport",   "url": "https://www.corrieredellosport.it/calcio",        "color": "#e06000"},
     {"id": "record",    "nombre": "Record PT",        "url": "https://www.record.pt/futebol/",                  "color": "#c8000a"},
     {"id": "sky",       "nombre": "Sky Sports",       "url": "https://www.skysports.com/rss/12040",             "color": "#0066cc", "es_rss": True},
@@ -64,7 +66,6 @@ FUENTES_INT = [
     {"id": "cbssport",  "nombre": "CBS Sports",       "url": "https://www.cbssports.com/rss/headlines/soccer/", "color": "#004b87", "es_rss": True},
     {"id": "sportnews", "nombre": "Sporting News",    "url": "https://www.sportingnews.com/us/soccer",          "color": "#cc3300"},
     {"id": "lequipe",   "nombre": "L'Equipe",         "url": "https://www.lequipe.fr/Football/",                "color": "#f5c400"},
-    {"id": "uefa",      "nombre": "UEFA (RSS)",       "url": "https://www.uefa.com/rss/uefachampionsleague/rss.xml", "color": "#003087", "es_rss": True},
     {"id": "fifa",      "nombre": "FIFA (RSS)",       "url": "https://www.fifa.com/rss-feeds/index.html",       "color": "#326295"},
 ]
 
@@ -1080,68 +1081,202 @@ with tab_tend:
         st.info("Actualizá las fuentes para ver las tendencias.")
     else:
         total_fuentes = len(TODAS_FUENTES)
+        sin_ole = [t for t in tendencias if not t["tiene_ole"]]
+        con_ole = [t for t in tendencias if t["tiene_ole"]]
+        hot     = [t for t in tendencias if t["cant_medios"] / total_fuentes >= 0.20]
 
-        filtro_tend = st.radio(
-            "Filtrar",
-            ["Sin Olé ❌", "Con Olé ✅", "🔥 Hot (+20% medios)", "Todos"],
-            horizontal=True,
-            key="filtro_tend",
-        )
+        # ── Métricas ─────────────────────────────────────────────────────────
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Temas detectados", len(tendencias))
+        m2.metric("❌ Sin Olé", len(sin_ole))
+        m3.metric("✅ Con Olé", len(con_ole))
+        m4.metric("🔥 Trending", len(hot))
 
-        lista_tend = tendencias[:80]
-        if filtro_tend == "Sin Olé ❌":
-            lista_tend = [t for t in lista_tend if not t["tiene_ole"]]
-        elif filtro_tend == "Con Olé ✅":
-            lista_tend = [t for t in lista_tend if t["tiene_ole"]]
-        elif filtro_tend == "🔥 Hot (+20% medios)":
-            lista_tend = [t for t in lista_tend if t["cant_medios"] / total_fuentes >= 0.20]
+        st.divider()
 
-        st.caption(f"{len(lista_tend)} temas · umbral similitud: {SIMILITUD_UMBRAL}")
+        # ── Helpers de frecuencia de palabras ────────────────────────────────
+        EXTRA_STOP = {
+            "partido","partidos","juego","juegos","dice","dijo","señalo",
+            "aseguro","confirmo","revelo","anuncio","hablo","tiene","hoy",
+            "ayer","manana","semana","anno","mes","vez","nuevo","nueva",
+            "gran","primer","primera","sera","puede","equipo","sobre",
+            "habla","luego","hace","dado","segun","after","over","into",
+            "than","their","they","this","that","with","will","from",
+        }
 
-        for t in lista_tend[:60]:
-            pct = t["cant_medios"] / total_fuentes
-            if pct >= 0.5:
-                accent = "#dc2626"
-                temp = "🔥🔥🔥"
-            elif pct >= 0.30:
-                accent = "#ea580c"
-                temp = "🔥🔥"
-            elif pct >= 0.15:
-                accent = "#ca8a04"
-                temp = "🔥"
-            else:
-                accent = "#3b82f6"
-                temp = ""
+        def build_word_freq(fuente_ids: list) -> list:
+            freq = {}
+            for fid in fuente_ids:
+                for n in (st.session_state.resultados or {}).get(fid, []):
+                    for w in normalizar_titulo(n["titulo"]) - EXTRA_STOP:
+                        if len(w) > 3:
+                            freq[w] = freq.get(w, 0) + 1
+            return sorted(freq.items(), key=lambda x: -x[1])
 
-            ole_badge = "✅ OLÉ" if t["tiene_ole"] else "❌ FALTA"
-            ole_color = "#15803d" if t["tiene_ole"] else "#991b1b"
+        def html_word_cloud(freq_list: list, color_hex: str) -> str:
+            """Genera una nube de palabras como HTML puro con posicionamiento en espiral."""
+            if not freq_list:
+                return "<p style='color:#aaa;text-align:center;padding:40px'>Sin datos</p>"
 
-            with st.expander(
-                f'{temp} {t["titulo"][:85]} — '
-                f'**{t["cant_medios"]} medios** | '
-                f'{t["nac"]}🇦🇷 {t["intl"]}🌍'
-            ):
+            words = freq_list[:60]
+            max_c = words[0][1]
+            min_c = words[-1][1]
+            rng   = max_c - min_c or 1
+
+            # Parsear color hex → rgb
+            h = color_hex.lstrip("#")
+            cr, cg, cb = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
+
+            # Posicionamiento en espiral (coordenadas % dentro del contenedor)
+            placed = []  # (cx, cy, half_w, half_h)
+            items_html = []
+            random.seed(42)
+
+            for word, count in words:
+                t = (count - min_c) / rng          # 0..1
+                fsize = 11 + t * 26                # 11px..37px
+                # Color: interpolar entre color_hex (t=1) y gris claro (t=0)
+                r = int(cr + (220 - cr) * (1 - t))
+                g = int(cg + (225 - cg) * (1 - t))
+                b = int(cb + (230 - cb) * (1 - t))
+                weight = "700" if t > 0.45 else "400"
+                opacity = 0.5 + t * 0.5
+
+                # Estimar tamaño en % (contenedor 480×260px)
+                hw = len(word) * fsize * 0.30 / 4.8   # half-width %
+                hh = fsize * 0.65 / 2.6               # half-height %
+
+                ok = False
+                for step in range(400):
+                    angle  = step * 0.28
+                    radius = step * 0.15
+                    cx = 50 + radius * math.cos(angle)
+                    cy = 50 + radius * math.sin(angle) * 0.55
+                    if cx - hw < 1 or cx + hw > 99 or cy - hh < 2 or cy + hh > 98:
+                        continue
+                    pad = 1.2
+                    if not any(
+                        abs(cx - px) < hw + phw + pad and abs(cy - py) < hh + phh + pad
+                        for px, py, phw, phh in placed
+                    ):
+                        placed.append((cx, cy, hw, hh))
+                        items_html.append(
+                            f'<span style="position:absolute;left:{cx:.1f}%;top:{cy:.1f}%;'
+                            f'transform:translate(-50%,-50%);font-size:{fsize:.1f}px;'
+                            f'font-weight:{weight};color:rgb({r},{g},{b});'
+                            f'opacity:{opacity:.2f};white-space:nowrap;'
+                            f'font-family:Barlow,sans-serif;line-height:1;'
+                            f'cursor:default" title="{count} menciones">{word}</span>'
+                        )
+                        ok = True
+                        break
+
+            return (
+                '<div style="position:relative;width:100%;height:260px;'
+                'background:#f8fafc;border-radius:10px;overflow:hidden;'
+                'border:1px solid #e2e8f0">'
+                + "".join(items_html)
+                + "</div>"
+            )
+
+        # ── Layout: ranking | nubes ───────────────────────────────────────────
+        col_rank, col_cloud = st.columns([3, 2], gap="large")
+
+        with col_rank:
+            st.markdown("#### 📊 Ranking de temas")
+            filtro = st.radio(
+                "Filtrar por",
+                ["Sin Olé ❌", "Con Olé ✅", "🔥 Hot", "Todos"],
+                horizontal=True, key="filtro_tend",
+            )
+            lista = tendencias[:80]
+            if filtro == "Sin Olé ❌":   lista = [t for t in lista if not t["tiene_ole"]]
+            elif filtro == "Con Olé ✅": lista = [t for t in lista if t["tiene_ole"]]
+            elif filtro == "🔥 Hot":     lista = [t for t in lista if t["cant_medios"] / total_fuentes >= 0.20]
+
+            st.caption(f"{len(lista)} temas · similitud Jaccard ≥ {SIMILITUD_UMBRAL}")
+
+            for t in lista[:50]:
+                pct = t["cant_medios"] / total_fuentes
+                bar_pct = int(pct * 100)
+                if pct >= 0.5:    accent, emoji = "#dc2626", "🔥🔥"
+                elif pct >= 0.30: accent, emoji = "#ea580c", "🔥"
+                elif pct >= 0.15: accent, emoji = "#ca8a04", "▲"
+                else:             accent, emoji = "#3b82f6", "·"
+
+                ole_dot = "🟢" if t["tiene_ole"] else "🔴"
+
+                chips = "".join(
+                    f'<span style="font-size:9px;font-weight:700;padding:1px 5px;'
+                    f'border-radius:3px;background:{item["fuente"]["color"]}18;'
+                    f'color:{item["fuente"]["color"]};border:1px solid {item["fuente"]["color"]}30">'
+                    f'{item["fuente"]["nombre"]}</span> '
+                    for item in t["noticias"]
+                )
+
                 st.markdown(
-                    f'<span style="color:{ole_color};font-weight:700;background:{ole_color}15;'
-                    f'padding:2px 10px;border-radius:4px">{ole_badge}</span>',
+                    f"""<div style="margin-bottom:7px;padding:9px 12px;border-radius:8px;
+                        border-left:4px solid {accent};background:#fafafa;
+                        border:1px solid #eee;border-left:4px solid {accent}">
+                      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                        <span style="font-size:11px;font-weight:700;color:{accent}">{emoji} {t['cant_medios']} medios</span>
+                        <span>{ole_dot}</span>
+                        <span style="font-size:10px;color:#94a3b8">{t['nac']}🇦🇷 {t['intl']}🌍</span>
+                        <div style="flex:1;height:5px;background:#e2e8f0;border-radius:3px;overflow:hidden">
+                          <div style="width:{bar_pct}%;height:100%;background:{accent}"></div>
+                        </div>
+                        <span style="font-size:10px;color:#94a3b8">{bar_pct}%</span>
+                      </div>
+                      <div style="font-size:13px;font-weight:600;color:#0f172a;
+                          line-height:1.4;margin-bottom:5px">{t['titulo'][:110]}</div>
+                      <div style="display:flex;flex-wrap:wrap;gap:2px">{chips}</div>
+                    </div>""",
                     unsafe_allow_html=True,
                 )
-                st.write("")
-                for item in t["noticias"]:
-                    n = item["noticia"]
-                    f = item["fuente"]
-                    badge_html = (
-                        f'<span style="color:{f["color"]};font-size:10px;font-weight:700;'
-                        f'background:{f["color"]}15;padding:1px 7px;border-radius:3px">'
-                        f'{f["nombre"]}</span>'
+
+                with st.expander("▸ ver notas", expanded=False):
+                    for item in t["noticias"]:
+                        n, f = item["noticia"], item["fuente"]
+                        badge = (f'<span style="color:{f["color"]};font-size:10px;font-weight:700;'
+                                 f'background:{f["color"]}18;padding:1px 6px;border-radius:3px">'
+                                 f'{f["nombre"]}</span>')
+                        if n.get("url"):
+                            st.markdown(f'{badge} [{n["titulo"]}]({n["url"]})', unsafe_allow_html=True)
+                        else:
+                            st.markdown(f'{badge} {n["titulo"]}', unsafe_allow_html=True)
+
+        with col_cloud:
+            st.markdown("#### 🔤 Nube de palabras")
+            nac_ids  = [f["id"] for f in FUENTES_NAC]
+            intl_ids = [f["id"] for f in FUENTES_INT]
+
+            ct1, ct2 = st.tabs(["🇦🇷 Nacionales", "🌍 Internacionales"])
+
+            with ct1:
+                freq_nac = build_word_freq(nac_ids)
+                st.markdown(html_word_cloud(freq_nac, "#00a846"), unsafe_allow_html=True)
+                if freq_nac:
+                    top = " &nbsp;·&nbsp; ".join(
+                        f'<b>{w}</b> <span style="color:#94a3b8;font-size:11px">×{c}</span>'
+                        for w, c in freq_nac[:10]
                     )
-                    if n.get("url"):
-                        st.markdown(
-                            f'{badge_html} [{n["titulo"]}]({n["url"]})',
-                            unsafe_allow_html=True,
-                        )
-                    else:
-                        st.markdown(f'{badge_html} {n["titulo"]}', unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div style="margin-top:8px;font-size:12px;line-height:2;color:#374151">{top}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+            with ct2:
+                freq_int = build_word_freq(intl_ids)
+                st.markdown(html_word_cloud(freq_int, "#1a7fc1"), unsafe_allow_html=True)
+                if freq_int:
+                    top = " &nbsp;·&nbsp; ".join(
+                        f'<b>{w}</b> <span style="color:#94a3b8;font-size:11px">×{c}</span>'
+                        for w, c in freq_int[:10]
+                    )
+                    st.markdown(
+                        f'<div style="margin-top:8px;font-size:12px;line-height:2;color:#374151">{top}</div>',
+                        unsafe_allow_html=True,
+                    )
 
 # ─── TAB IA ──────────────────────────────────────────────────────────────────
 with tab_ia:
