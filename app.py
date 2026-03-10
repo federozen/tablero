@@ -696,37 +696,200 @@ Generá un informe editorial en español rioplatense:
 
 Separar secciones con ───────. Sé muy específico y accionable."""
 
-def prompt_nota_rapida(tema: str, titulares: list, estilo: str, tipo_nota: str) -> str:
-    bloque = "\n".join(
-        f"  [{item['fuente']['nombre']}] {item['noticia']['titulo']}"
-        + (f" → {item['noticia']['url']}" if item['noticia'].get('url') else "")
-        for item in titulares[:20]
-    )
+# ─── SCRAPING DE CUERPO DE NOTA ──────────────────────────────────────────────
+def _extraer_cuerpo_nota(url: str, max_chars: int = 1800) -> str:
+    """Intenta extraer los primeros párrafos del cuerpo de una nota. Retorna '' si falla."""
+    if not url or not url.startswith("http"):
+        return ""
+    try:
+        resp = requests.get(url, headers=_FETCH_HEADERS, timeout=12, allow_redirects=True)
+        if resp.status_code != 200:
+            return ""
+        soup = BeautifulSoup(resp.text, "html.parser")
+        # Eliminar scripts, estilos, menús, publicidades
+        for tag in soup(["script", "style", "nav", "header", "footer",
+                          "aside", "form", "figure", "noscript", "iframe"]):
+            tag.decompose()
+        # Selectores de cuerpo de nota, del más específico al más genérico
+        BODY_SELS = [
+            "article .article-body", "article .nota-cuerpo", "article .entry-content",
+            "article .article-content", "article .post-content", "article .content-body",
+            ".article__body", ".nota__cuerpo", ".article-text", ".news-body",
+            "[class*=article-body]", "[class*=nota-cuerpo]", "[class*=entry-content]",
+            "[class*=article-content]", "[class*=post-body]",
+            "article", "[role=main]",
+        ]
+        texto = ""
+        for sel in BODY_SELS:
+            el = soup.select_one(sel)
+            if el:
+                parrafos = [p.get_text(" ", strip=True) for p in el.find_all("p") if len(p.get_text(strip=True)) > 40]
+                texto = "\n".join(parrafos[:8])
+                if len(texto) > 200:
+                    break
+        if not texto:
+            # Último recurso: todos los <p> largos de la página
+            parrafos = [p.get_text(" ", strip=True) for p in soup.find_all("p") if len(p.get_text(strip=True)) > 60]
+            texto = "\n".join(parrafos[:6])
+        return texto[:max_chars].strip()
+    except Exception:
+        return ""
+
+def scrape_cuerpos_notas(titulares: list, max_notas: int = 6) -> list:
+    """
+    Enriquece los titulares con el cuerpo scrapeado de cada URL.
+    Retorna lista de dicts con keys: fuente, noticia, cuerpo, ok.
+    Solo scrappea las primeras max_notas con URL válida.
+    """
+    enriquecidos = []
+    con_url = [item for item in titulares if item["noticia"].get("url")][:max_notas]
+    sin_url  = [item for item in titulares if not item["noticia"].get("url")]
+
+    if con_url:
+        with ThreadPoolExecutor(max_workers=5) as ex:
+            futures = {ex.submit(_extraer_cuerpo_nota, item["noticia"]["url"]): item for item in con_url}
+            for future in as_completed(futures):
+                item = futures[future]
+                try:
+                    cuerpo = future.result()
+                except Exception:
+                    cuerpo = ""
+                enriquecidos.append({**item, "cuerpo": cuerpo, "ok": bool(cuerpo)})
+
+    for item in sin_url:
+        enriquecidos.append({**item, "cuerpo": "", "ok": False})
+
+    # Agregar el resto de titulares (más allá de max_notas) sin cuerpo
+    ids_procesados = {id(item) for item in con_url + sin_url}
+    for item in titulares:
+        if id(item) not in ids_procesados:
+            enriquecidos.append({**item, "cuerpo": "", "ok": False})
+
+    return enriquecidos
+
+def prompt_nota_rapida(tema: str, titulares_enriquecidos: list, estilo: str, tipo_nota: str) -> str:
+    con_cuerpo  = [t for t in titulares_enriquecidos if t.get("ok")]
+    solo_titulo = [t for t in titulares_enriquecidos if not t.get("ok")]
+    tiene_info_real = len(con_cuerpo) > 0
+
+    # Bloque de fuentes con cuerpo completo
+    bloque_completo = ""
+    if con_cuerpo:
+        partes = []
+        for t in con_cuerpo:
+            f, n = t["fuente"], t["noticia"]
+            partes.append(
+                f"── [{f['nombre']}] {n['titulo']}\n"
+                f"URL: {n.get('url','')}\n"
+                f"TEXTO:\n{t['cuerpo']}"
+            )
+        bloque_completo = "\n\n".join(partes)
+
+    # Bloque de fuentes solo con titular
+    bloque_titulares = ""
+    if solo_titulo:
+        bloque_titulares = "\n".join(
+            f"  • [{t['fuente']['nombre']}] {t['noticia']['titulo']}"
+            for t in solo_titulo
+        )
 
     estilos = {
         "Informativa": "Nota informativa directa, estilo agencia, sin opinión.",
-        "Analítica": "Nota analítica con contexto, antecedentes y proyección.",
+        "Analítica":   "Nota analítica con contexto, antecedentes y proyección.",
         "Urgente/Flash": "Nota flash de máximo 3 párrafos, verbo en presente, sin adornos.",
     }
     tipos = {
-        "Nota completa": "Incluí lead, desarrollo (3-4 párrafos) y cierre con proyección.",
+        "Nota completa":              "Escribí lead, desarrollo (3-4 párrafos) y cierre con proyección.",
         "Solo titulares alternativos": "Generá 8 titulares alternativos: 2 impactantes, 2 SEO, 2 para redes sociales, 2 neutrales.",
-        "Esqueleto + ángulos": "Generá un esqueleto con secciones y 3 ángulos alternativos para desarrollar.",
+        "Esqueleto + ángulos":        "Generá un esqueleto con secciones numeradas y 3 ángulos posibles para desarrollar.",
     }
 
-    return f"""Sos un redactor deportivo de un portal argentino. Tu tarea es redactar sobre este tema:
+    if tiene_info_real:
+        instruccion_alucinacion = """⚠️ REGLAS ANTI-ALUCINACIÓN (CRÍTICAS — leelas antes de escribir una sola palabra):
+- Usá ÚNICAMENTE datos, cifras, citas y hechos que aparezcan textualmente en las FUENTES de abajo.
+- Prohibido agregar contexto histórico, estadísticas o antecedentes que no estén en los textos.
+- Las citas entre comillas SOLO pueden ser frases que aparezcan literalmente en los textos fuente.
+- Si un dato no está en los textos, escribí [DATO A CONFIRMAR] en su lugar. Sin excepciones.
+- Si dos fuentes se contradicen, mencioná la contradicción explícitamente."""
+
+        instruccion_formato = """
+FORMATO DE RESPUESTA OBLIGATORIO — respetá este orden exacto:
+
+════════════════════════════════════
+NOTA
+════════════════════════════════════
+[Aquí va la nota redactada según el estilo y entregable solicitado]
+
+
+════════════════════════════════════
+TABLA DE VERIFICACIÓN
+════════════════════════════════════
+Lista TODOS los datos concretos que usaste en la nota (cifras, nombres, citas, hechos).
+Para cada uno indicá:
+• DATO: el dato exacto como aparece en la nota
+• FUENTE: nombre del medio de donde lo tomaste
+• VERIFICADO: ✅ si está textualmente en el cuerpo scrapeado | ⚠️ si solo aparece en el titular | ❌ si no encontrás respaldo
+
+Ejemplo de fila:
+• DATO: "sufrió un desgarro en el isquiotibial derecho" | FUENTE: TyC Sports | VERIFICADO: ✅
+
+════════════════════════════════════
+ÁNGULOS ALTERNATIVOS
+════════════════════════════════════
+2 enfoques distintos para trabajar la nota, con título sugerido para cada uno.
+"""
+
+        bloque_fuentes = f"""=== FUENTES CON TEXTO COMPLETO ({len(con_cuerpo)}) — de estas podés extraer datos ===
+{bloque_completo}"""
+        if bloque_titulares:
+            bloque_fuentes += f"""
+
+=== FUENTES SOLO CON TITULAR ({len(solo_titulo)}) — NO inferir datos, solo confirmar que el tema existe ===
+{bloque_titulares}"""
+    else:
+        instruccion_alucinacion = """⚠️ MODO ESQUELETO SEGURO — no se pudo leer el cuerpo de ninguna nota.
+No redactes la nota. En cambio, seguí el formato de respuesta obligatorio de abajo."""
+
+        instruccion_formato = """
+FORMATO DE RESPUESTA OBLIGATORIO:
+
+════════════════════════════════════
+ESQUELETO DE NOTA
+════════════════════════════════════
+Estructura con secciones numeradas y vacías, listas para que el redactor complete.
+Indicá qué tipo de información va en cada sección.
+
+════════════════════════════════════
+DATOS CONFIRMADOS (solo desde titulares)
+════════════════════════════════════
+Lista con bullet points. Solo lo que los titulares permiten afirmar con certeza.
+Formato: • [dato] — confirmado por: [medio]
+
+════════════════════════════════════
+DATOS A CONFIRMAR ANTES DE PUBLICAR
+════════════════════════════════════
+Lista de preguntas concretas que el redactor debe responder antes de publicar.
+
+════════════════════════════════════
+ÁNGULOS ALTERNATIVOS
+════════════════════════════════════
+3 enfoques distintos según qué datos aparezcan, con título sugerido para cada uno.
+"""
+        bloque_fuentes = f"""=== SOLO TITULARES DISPONIBLES ({len(solo_titulo)}) ===
+{bloque_titulares}"""
+
+    return f"""Sos un redactor deportivo de un portal argentino. Tu tarea es trabajar sobre este tema:
 
 TEMA: {tema}
-
-TITULARES DE LA COMPETENCIA ({len(titulares)} medios):
-{bloque}
-
 ESTILO: {estilos.get(estilo, estilos["Informativa"])}
 ENTREGABLE: {tipos.get(tipo_nota, tipos["Nota completa"])}
 
+{instruccion_alucinacion}
+{instruccion_formato}
+
+{bloque_fuentes}
+
 Respondé en español rioplatense. Usá voseo. Sé concreto y periodístico.
-No inventes datos que no estén en los titulares — si falta info, marcalo como [DATO A CONFIRMAR].
-Al final, incluí una sección "ÁNGULOS ALTERNATIVOS" con 2 enfoques distintos para trabajar la nota.
 """
 
 
@@ -746,6 +909,8 @@ if "nota_rapida" not in st.session_state:
     st.session_state.nota_rapida = ""
 if "nota_rapida_titulares" not in st.session_state:
     st.session_state.nota_rapida_titulares = []
+if "nota_rapida_modo" not in st.session_state:
+    st.session_state.nota_rapida_modo = ""
 
 # Cache de imágenes a nivel de módulo (accesible desde threads)
 # Se mantiene mientras el proceso de Streamlit esté vivo
@@ -1528,42 +1693,137 @@ with tab_nota:
         elif not tema_elegido:
             st.error("Escribí o seleccioná un tema primero.")
         else:
-            with st.spinner("Redactando con Claude..."):
+            urls_disponibles = [t for t in titulares_seleccionados if t["noticia"].get("url")]
+            max_scrape = min(6, len(urls_disponibles))
+
+            # Paso 1: Scraping
+            titulares_enriquecidos = titulares_seleccionados
+            if urls_disponibles:
+                with st.spinner(f"🔍 Leyendo el cuerpo de {max_scrape} notas ({len(titulares_seleccionados)} en total)..."):
+                    titulares_enriquecidos = scrape_cuerpos_notas(titulares_seleccionados, max_notas=max_scrape)
+
+                ok_count = sum(1 for t in titulares_enriquecidos if t.get("ok"))
+                if ok_count > 0:
+                    st.success(f"✔ Se leyó el cuerpo de {ok_count}/{max_scrape} notas — redactando con información real")
+                else:
+                    st.warning("⚠️ No se pudo leer el cuerpo de ninguna nota — activando modo esqueleto seguro")
+            else:
+                st.warning("⚠️ Ninguna noticia tiene URL disponible — activando modo esqueleto seguro")
+                titulares_enriquecidos = [{**t, "cuerpo": "", "ok": False} for t in titulares_seleccionados]
+
+            # Paso 2: Generar con Claude
+            with st.spinner("✦ Redactando con Claude..."):
                 try:
-                    prompt = prompt_nota_rapida(tema_elegido, titulares_seleccionados, estilo_nota, tipo_nota)
-                    st.session_state.nota_rapida = call_claude(prompt, api_key_nota, 2000)
-                    st.session_state.nota_rapida_titulares = titulares_seleccionados
-                    st.success("✔ Borrador generado")
+                    prompt = prompt_nota_rapida(tema_elegido, titulares_enriquecidos, estilo_nota, tipo_nota)
+                    st.session_state.nota_rapida = call_claude(prompt, api_key_nota, 2200)
+                    st.session_state.nota_rapida_titulares = titulares_enriquecidos
+                    ok_final = sum(1 for t in titulares_enriquecidos if t.get("ok"))
+                    modo = "con cuerpo completo" if ok_final > 0 else "esqueleto seguro (sin cuerpo)"
+                    st.session_state.nota_rapida_modo = modo
                 except Exception as e:
                     st.error(f"Error al llamar a Claude: {e}")
 
     # Resultado
     if st.session_state.nota_rapida:
-        st.markdown("#### 📄 Borrador generado")
-        nota_editada = st.text_area(
-            "Podés editar el texto antes de copiarlo",
-            value=st.session_state.nota_rapida,
-            height=520,
-            label_visibility="collapsed",
-            key="nota_textarea",
+        modo_badge = st.session_state.get("nota_rapida_modo", "")
+        raw = st.session_state.nota_rapida
+
+        # ── Separar secciones por el delimitador de════ ──────────────────────
+        def _split_seccion(texto: str, encabezado: str) -> str:
+            """Extrae el contenido de una sección delimitada por ════...════"""
+            pattern = rf"════+\s*{re.escape(encabezado)}\s*════+\s*(.*?)(?=════|$)"
+            m = re.search(pattern, texto, re.DOTALL | re.IGNORECASE)
+            return m.group(1).strip() if m else ""
+
+        seccion_nota        = _split_seccion(raw, "NOTA") or _split_seccion(raw, "ESQUELETO DE NOTA")
+        seccion_verificacion = _split_seccion(raw, "TABLA DE VERIFICACIÓN") or _split_seccion(raw, "DATOS CONFIRMADOS.*")
+        seccion_angulos     = _split_seccion(raw, "ÁNGULOS ALTERNATIVOS")
+
+        # Si el modelo no respetó el formato exacto, mostrar todo junto
+        sin_secciones = not (seccion_nota or seccion_verificacion)
+
+        if "esqueleto" in modo_badge:
+            st.warning("🦴 **Modo esqueleto seguro** — no había cuerpo de notas disponible. Completá los espacios vacíos antes de publicar.")
+        elif modo_badge:
+            ok_n = sum(1 for t in st.session_state.nota_rapida_titulares if t.get("ok"))
+            st.info(f"📰 Generado con el cuerpo real de **{ok_n}** nota(s). Revisá la Tabla de Verificación antes de publicar.")
+
+        if sin_secciones:
+            # Fallback: todo en un texto area editable
+            st.markdown("#### 📄 Resultado")
+            nota_editada = st.text_area("", value=raw, height=560, label_visibility="collapsed", key="nota_textarea")
+        else:
+            tab_r1, tab_r2, tab_r3 = st.tabs(["📄 Nota / Esqueleto", "🔍 Tabla de Verificación", "💡 Ángulos Alternativos"])
+
+            with tab_r1:
+                st.caption("Editá el texto antes de copiar o descargar.")
+                nota_editada = st.text_area(
+                    "", value=seccion_nota, height=480,
+                    label_visibility="collapsed", key="nota_textarea"
+                )
+                col_dl1, col_dl2 = st.columns(2)
+                with col_dl1:
+                    st.download_button(
+                        "📥 Descargar nota .txt", nota_editada,
+                        file_name=f"nota_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                        mime="text/plain", use_container_width=True,
+                    )
+                with col_dl2:
+                    st.download_button(
+                        "📥 Descargar nota .md", nota_editada,
+                        file_name=f"nota_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+                        mime="text/markdown", use_container_width=True,
+                    )
+
+            with tab_r2:
+                if seccion_verificacion:
+                    # Colorear filas según el ícono de verificación
+                    lineas = seccion_verificacion.split("\n")
+                    for linea in lineas:
+                        linea = linea.strip()
+                        if not linea:
+                            continue
+                        if "✅" in linea:
+                            color, bg = "#166534", "#f0fdf4"
+                            borde = "#86efac"
+                        elif "⚠️" in linea or "⚠" in linea:
+                            color, bg = "#92400e", "#fffbeb"
+                            borde = "#fcd34d"
+                        elif "❌" in linea:
+                            color, bg = "#991b1b", "#fef2f2"
+                            borde = "#fca5a5"
+                        else:
+                            color, bg = "#374151", "#f9fafb"
+                            borde = "#e5e7eb"
+                        st.markdown(
+                            f'<div style="padding:7px 12px;margin-bottom:5px;border-radius:6px;'
+                            f'background:{bg};border-left:3px solid {borde};'
+                            f'color:{color};font-size:14px;line-height:1.5">{linea}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    st.divider()
+                    st.download_button(
+                        "📥 Descargar tabla .txt", seccion_verificacion,
+                        file_name=f"verificacion_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                        mime="text/plain",
+                    )
+                else:
+                    st.info("No se generó tabla de verificación. Intentá regenerar la nota.")
+
+            with tab_r3:
+                if seccion_angulos:
+                    st.markdown(seccion_angulos)
+                else:
+                    st.info("No se detectaron ángulos alternativos en la respuesta.")
+
+        # Descarga completa siempre disponible
+        st.divider()
+        st.download_button(
+            "📥 Descargar respuesta completa",
+            raw,
+            file_name=f"nota_completa_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+            mime="text/plain",
         )
-        col_dl1, col_dl2 = st.columns(2)
-        with col_dl1:
-            st.download_button(
-                "📥 Descargar .txt",
-                nota_editada,
-                file_name=f"nota_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
-        with col_dl2:
-            st.download_button(
-                "📥 Descargar .md",
-                nota_editada,
-                file_name=f"nota_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
-                mime="text/markdown",
-                use_container_width=True,
-            )
     else:
         st.info("El borrador aparecerá acá una vez que lo generes.")
 
