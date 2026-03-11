@@ -921,10 +921,15 @@ ENTREGABLE: {tipos.get(tipo_nota, tipos["Nota completa"])}
 
 {bloque_fuentes}
 
-Escribí en español rioplatense con voseo. Tono de agencia argentina: directo, concreto, sin grandilocuencia.
-Evitá frases como "en este contexto", "cabe destacar", "vale la pena mencionar".
-No uses adjetivos valorativos ("increíble", "impresionante", "histórico") salvo que estén en la fuente.
-Nunca uses "lead", "bajada" ni ningún término de manual de redacción en el texto de la nota.
+Escribí en español rioplatense con voseo. Tono de agencia de noticias argentina (estilo Télam, NA, DyN).
+Reglas de estilo periodístico argentino:
+- Los clubes se nombran como los nombra la prensa argentina: "River" (no "River Plate"), "Boca" (no "Boca Juniors"), "Racing" (no "Racing Club"), "San Lorenzo" (no "San Lorenzo de Almagro"), "Independiente", "Huracán", "Vélez", "Lanús", "Defensa", etc.
+- Los seleccionados: "la Selección" o "el equipo nacional" (no "la Albiceleste" salvo que sea en un contexto festivo), "la Sub-20", "la Sub-23".
+- Los jugadores se mencionan por apellido a partir de la segunda referencia: "Messi" (no "La Pulga"), "Di María" (no "el Fideo"). Sin apodos en texto de agencia.
+- Cargos y funciones en minúscula: "el entrenador Scaloni", "el presidente Laporta", "el director técnico".
+- Evitá frases como "en este contexto", "cabe destacar", "vale la pena mencionar", "a su vez", "en tanto".
+- No uses adjetivos valorativos ("increíble", "impresionante", "histórico", "brillante") salvo que estén textualmente en la fuente.
+- Nunca uses "lead", "bajada" ni ningún término de manual de redacción en el cuerpo de la nota.
 {("\n=== CONTEXTO ADICIONAL DEL REDACTOR ===\n" + contexto_extra + "\n(Podés usar este contexto libremente en la nota — es información aportada por el redactor, no requiere verificación de fuente.)") if contexto_extra else ""}
 """
 
@@ -1763,7 +1768,7 @@ with tab_nota:
     st.markdown("#### 1️⃣ ¿De dónde tomamos las notas?")
     modo_tema = st.radio(
         "",
-        ["🔍 Buscar en los medios cargados", "📊 Desde el ranking de tendencias", "✏️ Escribir tema libre"],
+        ["📊 Desde el ranking de tendencias", "🔍 Buscar en los medios cargados", "✏️ Escribir tema libre"],
         horizontal=True,
         key="nota_modo_tema",
         label_visibility="collapsed",
@@ -1773,7 +1778,7 @@ with tab_nota:
     tema_elegido = ""
 
     # ── Modo 1: Búsqueda libre en todos los medios ────────────────────────────
-    if modo_tema == "🔍 Buscar en los medios cargados":
+    if modo_tema == "📊 Desde el ranking de tendencias":
         col_bq1, col_bq2 = st.columns([3, 1])
         with col_bq1:
             busqueda = st.text_input(
@@ -1848,8 +1853,8 @@ with tab_nota:
         elif busqueda.strip():
             st.warning(f'No se encontraron notas que mencionen "{busqueda}". Probá con otro término.')
 
-    # ── Modo 2: Desde ranking de tendencias ──────────────────────────────────
-    elif modo_tema == "📊 Desde el ranking de tendencias":
+    # ── Modo 2: Búsqueda por palabra clave ───────────────────────────────────
+    elif modo_tema == "🔍 Buscar en los medios cargados":
         if not tendencias:
             st.warning("Primero actualizá las fuentes para cargar tendencias.")
         else:
@@ -1956,7 +1961,7 @@ with tab_nota:
 
     # ── PASO 3: Generar ───────────────────────────────────────────────────────
     api_key_nota = api_key
-    puede_generar = bool(titulares_seleccionados or (modo_tema == "✏️ Escribir tema libre" and tema_elegido))
+    puede_generar = bool(titulares_seleccionados or (modo_tema == "✏️ Escribir tema libre" and tema_elegido.strip()))
 
     col_btn1, col_btn2, _ = st.columns([1, 1, 2])
     with col_btn1:
