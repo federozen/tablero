@@ -1777,8 +1777,65 @@ with tab_nota:
     titulares_seleccionados = []
     tema_elegido = ""
 
-    # ── Modo 1: Búsqueda libre en todos los medios ────────────────────────────
+    # ── Modo 1: Desde el ranking de tendencias ──────────────────────────────
     if modo_tema == "📊 Desde el ranking de tendencias":
+        if not tendencias:
+            st.warning("Primero actualizá las fuentes para cargar tendencias.")
+        else:
+            opciones_temas = [
+                f"[{t['cant_medios']} medios] {t['titulo'][:90]}"
+                for t in tendencias[:40]
+            ]
+            tema_idx = st.selectbox(
+                "Tema del ranking",
+                range(len(opciones_temas)),
+                format_func=lambda i: opciones_temas[i],
+                key="nota_tema_idx",
+            )
+            tema_elegido = tendencias[tema_idx]["titulo"]
+            titulares_pool = tendencias[tema_idx]["noticias"]
+
+            st.caption(f"**{len(titulares_pool)}** notas en este tema — marcá las que querés usar:")
+            sel_key_t = f"nota_sel_tend_{tema_idx}"
+            if sel_key_t not in st.session_state:
+                st.session_state[sel_key_t] = set(range(len(titulares_pool)))  # todas por defecto
+
+            col_ta, col_tb = st.columns([1, 5])
+            with col_ta:
+                if st.button("☑ Todas", key="nota_tend_all", use_container_width=True):
+                    st.session_state[sel_key_t] = set(range(len(titulares_pool)))
+                    st.rerun()
+            with col_tb:
+                if st.button("☐ Ninguna", key="nota_tend_none", use_container_width=True):
+                    st.session_state[sel_key_t] = set()
+                    st.rerun()
+
+            for idx, item in enumerate(titulares_pool):
+                f = item["fuente"]
+                n = item["noticia"]
+                checked = idx in st.session_state[sel_key_t]
+                badge_html = (
+                    f'<span style="font-size:10px;font-weight:700;padding:1px 6px;'
+                    f'border-radius:3px;background:{f["color"]}18;color:{f["color"]};'
+                    f'border:1px solid {f["color"]}30">{f["nombre"]}</span>'
+                )
+                col_ck, col_txt = st.columns([1, 11])
+                with col_ck:
+                    nuevo = st.checkbox("", value=checked, key=f"nota_tend_ck_{tema_idx}_{idx}")
+                    if nuevo and idx not in st.session_state[sel_key_t]:
+                        st.session_state[sel_key_t].add(idx)
+                    elif not nuevo and idx in st.session_state[sel_key_t]:
+                        st.session_state[sel_key_t].discard(idx)
+                with col_txt:
+                    titulo_display = f"[{n['titulo']}]({n['url']})" if n.get("url") else n["titulo"]
+                    st.markdown(f'{badge_html} {titulo_display}', unsafe_allow_html=True)
+
+            titulares_seleccionados = [titulares_pool[i] for i in sorted(st.session_state.get(sel_key_t, set())) if i < len(titulares_pool)]
+            if titulares_seleccionados:
+                st.success(f"✔ {len(titulares_seleccionados)} nota(s) seleccionada(s)")
+
+    # ── Modo 2: Búsqueda por palabra clave ───────────────────────────────────
+    elif modo_tema == "🔍 Buscar en los medios cargados":
         col_bq1, col_bq2 = st.columns([3, 1])
         with col_bq1:
             busqueda = st.text_input(
@@ -1852,63 +1909,6 @@ with tab_nota:
 
         elif busqueda.strip():
             st.warning(f'No se encontraron notas que mencionen "{busqueda}". Probá con otro término.')
-
-    # ── Modo 2: Búsqueda por palabra clave ───────────────────────────────────
-    elif modo_tema == "🔍 Buscar en los medios cargados":
-        if not tendencias:
-            st.warning("Primero actualizá las fuentes para cargar tendencias.")
-        else:
-            opciones_temas = [
-                f"[{t['cant_medios']} medios] {t['titulo'][:90]}"
-                for t in tendencias[:40]
-            ]
-            tema_idx = st.selectbox(
-                "Tema del ranking",
-                range(len(opciones_temas)),
-                format_func=lambda i: opciones_temas[i],
-                key="nota_tema_idx",
-            )
-            tema_elegido = tendencias[tema_idx]["titulo"]
-            titulares_pool = tendencias[tema_idx]["noticias"]
-
-            st.caption(f"**{len(titulares_pool)}** notas en este tema — marcá las que querés usar:")
-            sel_key_t = f"nota_sel_tend_{tema_idx}"
-            if sel_key_t not in st.session_state:
-                st.session_state[sel_key_t] = set(range(len(titulares_pool)))  # todas por defecto
-
-            col_ta, col_tb = st.columns([1, 5])
-            with col_ta:
-                if st.button("☑ Todas", key="nota_tend_all", use_container_width=True):
-                    st.session_state[sel_key_t] = set(range(len(titulares_pool)))
-                    st.rerun()
-            with col_tb:
-                if st.button("☐ Ninguna", key="nota_tend_none", use_container_width=True):
-                    st.session_state[sel_key_t] = set()
-                    st.rerun()
-
-            for idx, item in enumerate(titulares_pool):
-                f = item["fuente"]
-                n = item["noticia"]
-                checked = idx in st.session_state[sel_key_t]
-                badge_html = (
-                    f'<span style="font-size:10px;font-weight:700;padding:1px 6px;'
-                    f'border-radius:3px;background:{f["color"]}18;color:{f["color"]};'
-                    f'border:1px solid {f["color"]}30">{f["nombre"]}</span>'
-                )
-                col_ck, col_txt = st.columns([1, 11])
-                with col_ck:
-                    nuevo = st.checkbox("", value=checked, key=f"nota_tend_ck_{tema_idx}_{idx}")
-                    if nuevo and idx not in st.session_state[sel_key_t]:
-                        st.session_state[sel_key_t].add(idx)
-                    elif not nuevo and idx in st.session_state[sel_key_t]:
-                        st.session_state[sel_key_t].discard(idx)
-                with col_txt:
-                    titulo_display = f"[{n['titulo']}]({n['url']})" if n.get("url") else n["titulo"]
-                    st.markdown(f'{badge_html} {titulo_display}', unsafe_allow_html=True)
-
-            titulares_seleccionados = [titulares_pool[i] for i in sorted(st.session_state.get(sel_key_t, set())) if i < len(titulares_pool)]
-            if titulares_seleccionados:
-                st.success(f"✔ {len(titulares_seleccionados)} nota(s) seleccionada(s)")
 
     # ── Modo 3: Tema libre ────────────────────────────────────────────────────
     else:
