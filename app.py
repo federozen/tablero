@@ -768,7 +768,7 @@ def scrape_cuerpos_notas(titulares: list, max_notas: int = 6) -> list:
 
     return enriquecidos
 
-def prompt_nota_rapida(tema: str, titulares_enriquecidos: list, estilo: str, tipo_nota: str) -> str:
+def prompt_nota_rapida(tema: str, titulares_enriquecidos: list, estilo: str, tipo_nota: str, contexto_extra: str = "") -> str:
     con_cuerpo  = [t for t in titulares_enriquecidos if t.get("ok")]
     solo_titulo = [t for t in titulares_enriquecidos if not t.get("ok")]
     tiene_info_real = len(con_cuerpo) > 0
@@ -925,6 +925,7 @@ Escribí en español rioplatense con voseo. Tono de agencia argentina: directo, 
 Evitá frases como "en este contexto", "cabe destacar", "vale la pena mencionar".
 No uses adjetivos valorativos ("increíble", "impresionante", "histórico") salvo que estén en la fuente.
 Nunca uses "lead", "bajada" ni ningún término de manual de redacción en el texto de la nota.
+{("\n=== CONTEXTO ADICIONAL DEL REDACTOR ===\n" + contexto_extra + "\n(Podés usar este contexto libremente en la nota — es información aportada por el redactor, no requiere verificación de fuente.)") if contexto_extra else ""}
 """
 
 
@@ -1756,90 +1757,208 @@ with tab_ia:
 # ─── TAB NOTA RÁPIDA ─────────────────────────────────────────────────────────
 with tab_nota:
     st.markdown("### ✍️ Asistente de Nota Rápida")
-    st.caption("Elegí un tema del ranking, seleccioná el estilo y generá un borrador con IA.")
+    st.caption("Buscá un tema, elegí las notas que querés usar y generá el borrador con IA.")
 
-    col_nota1, col_nota2 = st.columns([2, 1])
+    # ── PASO 1: Fuente del tema ───────────────────────────────────────────────
+    st.markdown("#### 1️⃣ ¿De dónde tomamos las notas?")
+    modo_tema = st.radio(
+        "",
+        ["🔍 Buscar en los medios cargados", "📊 Desde el ranking de tendencias", "✏️ Escribir tema libre"],
+        horizontal=True,
+        key="nota_modo_tema",
+        label_visibility="collapsed",
+    )
 
-    with col_nota1:
-        # Modo de selección del tema
-        modo_tema = st.radio(
-            "¿Cómo querés elegir el tema?",
-            ["📊 Desde el ranking de tendencias", "✏️ Escribir tema libre"],
-            horizontal=True,
-            key="nota_modo_tema",
-        )
+    titulares_seleccionados = []
+    tema_elegido = ""
 
-        titulares_seleccionados = []
+    # ── Modo 1: Búsqueda libre en todos los medios ────────────────────────────
+    if modo_tema == "🔍 Buscar en los medios cargados":
+        col_bq1, col_bq2 = st.columns([3, 1])
+        with col_bq1:
+            busqueda = st.text_input(
+                "Palabra o nombre a buscar",
+                placeholder="Ej: Messi, Boca, lesión, Scaloni...",
+                key="nota_busqueda",
+            )
+        with col_bq2:
+            fuente_busq = st.selectbox(
+                "Fuentes",
+                ["Todas", "Solo nacionales", "Solo internacionales"],
+                key="nota_busq_fuentes",
+            )
 
-        if modo_tema == "📊 Desde el ranking de tendencias":
-            if not tendencias:
-                st.warning("Primero actualizá las fuentes para cargar tendencias.")
-            else:
-                opciones_temas = [
-                    f"[{t['cant_medios']} medios] {t['titulo'][:90]}"
-                    for t in tendencias[:40]
-                ]
-                tema_idx = st.selectbox(
-                    "Tema del ranking",
-                    range(len(opciones_temas)),
-                    format_func=lambda i: opciones_temas[i],
-                    key="nota_tema_idx",
+        resultados_busq = []
+        if busqueda.strip():
+            q = busqueda.strip().lower()
+            pool = TODAS_FUENTES
+            if fuente_busq == "Solo nacionales":   pool = FUENTES_NAC
+            elif fuente_busq == "Solo internacionales": pool = FUENTES_INT
+            for f in pool:
+                for n in resultados.get(f["id"], []):
+                    if q in n["titulo"].lower():
+                        resultados_busq.append({"fuente": f, "noticia": n})
+
+        if resultados_busq:
+            tema_elegido = busqueda.strip()
+            st.caption(f"**{len(resultados_busq)}** notas encontradas — marcá las que querés usar:")
+
+            # Inicializar selección en session state
+            sel_key = f"nota_sel_{busqueda}"
+            if sel_key not in st.session_state:
+                st.session_state[sel_key] = set()
+
+            col_sa, col_sb = st.columns([1, 5])
+            with col_sa:
+                if st.button("☑ Todas", key="nota_sel_all", use_container_width=True):
+                    st.session_state[sel_key] = set(range(len(resultados_busq)))
+                    st.rerun()
+            with col_sb:
+                if st.button("☐ Ninguna", key="nota_sel_none", use_container_width=True):
+                    st.session_state[sel_key] = set()
+                    st.rerun()
+
+            for idx, item in enumerate(resultados_busq[:50]):
+                f = item["fuente"]
+                n = item["noticia"]
+                checked = idx in st.session_state[sel_key]
+                badge_html = (
+                    f'<span style="font-size:10px;font-weight:700;padding:1px 6px;'
+                    f'border-radius:3px;background:{f["color"]}18;color:{f["color"]};'
+                    f'border:1px solid {f["color"]}30">{f["nombre"]}</span>'
                 )
-                tema_elegido = tendencias[tema_idx]["titulo"]
-                titulares_seleccionados = tendencias[tema_idx]["noticias"]
+                col_ck, col_txt = st.columns([1, 11])
+                with col_ck:
+                    nuevo = st.checkbox("", value=checked, key=f"nota_ck_{busqueda}_{idx}")
+                    if nuevo and idx not in st.session_state[sel_key]:
+                        st.session_state[sel_key].add(idx)
+                    elif not nuevo and idx in st.session_state[sel_key]:
+                        st.session_state[sel_key].discard(idx)
+                with col_txt:
+                    titulo_display = f"[{n['titulo']}]({n['url']})" if n.get("url") else n["titulo"]
+                    st.markdown(f'{badge_html} {titulo_display}', unsafe_allow_html=True)
 
-                # Mostrar titulares agrupados
-                with st.expander(f"📋 {len(titulares_seleccionados)} titulares agrupados en este tema", expanded=False):
-                    for item in titulares_seleccionados:
-                        f = item["fuente"]
-                        n = item["noticia"]
-                        badge = (
-                            f'<span style="font-size:10px;font-weight:700;padding:1px 6px;'
-                            f'border-radius:3px;background:{f["color"]}18;color:{f["color"]};'
-                            f'border:1px solid {f["color"]}30">{f["nombre"]}</span>'
-                        )
-                        if n.get("url"):
-                            st.markdown(f'{badge} [{n["titulo"]}]({n["url"]})', unsafe_allow_html=True)
-                        else:
-                            st.markdown(f'{badge} {n["titulo"]}', unsafe_allow_html=True)
+            seleccionados_idx = st.session_state.get(sel_key, set())
+            titulares_seleccionados = [resultados_busq[i] for i in sorted(seleccionados_idx) if i < len(resultados_busq)]
+            if titulares_seleccionados:
+                st.success(f"✔ {len(titulares_seleccionados)} nota(s) seleccionada(s) para generar")
+            else:
+                st.info("Marcá al menos una nota para continuar.")
+
+        elif busqueda.strip():
+            st.warning(f'No se encontraron notas que mencionen "{busqueda}". Probá con otro término.')
+
+    # ── Modo 2: Desde ranking de tendencias ──────────────────────────────────
+    elif modo_tema == "📊 Desde el ranking de tendencias":
+        if not tendencias:
+            st.warning("Primero actualizá las fuentes para cargar tendencias.")
         else:
-            tema_elegido = st.text_input(
-                "Escribí el tema de la nota",
-                placeholder="Ej: Lesión de Lautaro Martínez antes de la Copa América",
-                key="nota_tema_libre",
+            opciones_temas = [
+                f"[{t['cant_medios']} medios] {t['titulo'][:90]}"
+                for t in tendencias[:40]
+            ]
+            tema_idx = st.selectbox(
+                "Tema del ranking",
+                range(len(opciones_temas)),
+                format_func=lambda i: opciones_temas[i],
+                key="nota_tema_idx",
             )
-            titulares_libres = st.text_area(
-                "Pegá titulares de referencia (uno por línea, opcional)",
-                placeholder="Lautaro Martínez se lesionó en el entrenamiento\nEl Toro en duda para el próximo partido...",
-                height=120,
-                key="nota_titulares_libres",
-            )
-            if titulares_libres.strip():
-                fuente_generica = {"nombre": "Referencia", "color": "#666666", "id": "manual"}
-                titulares_seleccionados = [
-                    {"fuente": fuente_generica, "noticia": {"titulo": t.strip(), "url": None}}
-                    for t in titulares_libres.strip().split("\n") if t.strip()
-                ]
+            tema_elegido = tendencias[tema_idx]["titulo"]
+            titulares_pool = tendencias[tema_idx]["noticias"]
 
-    with col_nota2:
+            st.caption(f"**{len(titulares_pool)}** notas en este tema — marcá las que querés usar:")
+            sel_key_t = f"nota_sel_tend_{tema_idx}"
+            if sel_key_t not in st.session_state:
+                st.session_state[sel_key_t] = set(range(len(titulares_pool)))  # todas por defecto
+
+            col_ta, col_tb = st.columns([1, 5])
+            with col_ta:
+                if st.button("☑ Todas", key="nota_tend_all", use_container_width=True):
+                    st.session_state[sel_key_t] = set(range(len(titulares_pool)))
+                    st.rerun()
+            with col_tb:
+                if st.button("☐ Ninguna", key="nota_tend_none", use_container_width=True):
+                    st.session_state[sel_key_t] = set()
+                    st.rerun()
+
+            for idx, item in enumerate(titulares_pool):
+                f = item["fuente"]
+                n = item["noticia"]
+                checked = idx in st.session_state[sel_key_t]
+                badge_html = (
+                    f'<span style="font-size:10px;font-weight:700;padding:1px 6px;'
+                    f'border-radius:3px;background:{f["color"]}18;color:{f["color"]};'
+                    f'border:1px solid {f["color"]}30">{f["nombre"]}</span>'
+                )
+                col_ck, col_txt = st.columns([1, 11])
+                with col_ck:
+                    nuevo = st.checkbox("", value=checked, key=f"nota_tend_ck_{tema_idx}_{idx}")
+                    if nuevo and idx not in st.session_state[sel_key_t]:
+                        st.session_state[sel_key_t].add(idx)
+                    elif not nuevo and idx in st.session_state[sel_key_t]:
+                        st.session_state[sel_key_t].discard(idx)
+                with col_txt:
+                    titulo_display = f"[{n['titulo']}]({n['url']})" if n.get("url") else n["titulo"]
+                    st.markdown(f'{badge_html} {titulo_display}', unsafe_allow_html=True)
+
+            titulares_seleccionados = [titulares_pool[i] for i in sorted(st.session_state.get(sel_key_t, set())) if i < len(titulares_pool)]
+            if titulares_seleccionados:
+                st.success(f"✔ {len(titulares_seleccionados)} nota(s) seleccionada(s)")
+
+    # ── Modo 3: Tema libre ────────────────────────────────────────────────────
+    else:
+        tema_elegido = st.text_input(
+            "Escribí el tema de la nota",
+            placeholder="Ej: Lesión de Lautaro Martínez antes de la Copa América",
+            key="nota_tema_libre",
+        )
+        titulares_libres = st.text_area(
+            "Pegá titulares de referencia (uno por línea, opcional)",
+            placeholder="Lautaro Martínez se lesionó en el entrenamiento\nEl Toro en duda para el próximo partido...",
+            height=100,
+            key="nota_titulares_libres",
+        )
+        if titulares_libres.strip():
+            fuente_generica = {"nombre": "Referencia", "color": "#666666", "id": "manual"}
+            titulares_seleccionados = [
+                {"fuente": fuente_generica, "noticia": {"titulo": t.strip(), "url": None}}
+                for t in titulares_libres.strip().split("\n") if t.strip()
+            ]
+
+    st.divider()
+
+    # ── PASO 2: Opciones + Contexto ───────────────────────────────────────────
+    st.markdown("#### 2️⃣ Opciones de redacción")
+    col_nota2a, col_nota2b = st.columns([1, 1])
+    with col_nota2a:
         estilo_nota = st.selectbox(
-            "Estilo de redacción",
+            "Estilo",
             ["Informativa", "Analítica", "Urgente/Flash"],
             key="nota_estilo",
         )
         tipo_nota = st.selectbox(
-            "¿Qué necesitás?",
+            "Entregable",
             ["Nota completa", "Solo titulares alternativos", "Esqueleto + ángulos"],
             key="nota_tipo",
+        )
+    with col_nota2b:
+        contexto_extra = st.text_area(
+            "Contexto adicional (opcional)",
+            placeholder=(
+                "Agregá datos propios, información de fondo, declaraciones que tengas, "
+                "el ángulo que querés tomar, o cualquier detalle extra que el redactor manejó y no está en las notas..."
+            ),
+            height=120,
+            key="nota_contexto",
         )
 
     st.divider()
 
-    # Botón generar
-    api_key_nota = api_key  # reutilizar la key del sidebar
-    puede_generar = bool(tema_elegido if modo_tema == "✏️ Escribir tema libre" else (tendencias and True))
+    # ── PASO 3: Generar ───────────────────────────────────────────────────────
+    api_key_nota = api_key
+    puede_generar = bool(titulares_seleccionados or (modo_tema == "✏️ Escribir tema libre" and tema_elegido))
 
-    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
+    col_btn1, col_btn2, _ = st.columns([1, 1, 2])
     with col_btn1:
         generar = st.button(
             "✦ Generar con IA",
@@ -1856,47 +1975,44 @@ with tab_nota:
     if generar:
         if not api_key_nota:
             st.error("Ingresá tu API key en el panel izquierdo para usar la IA.")
-        elif not tema_elegido:
-            st.error("Escribí o seleccioná un tema primero.")
+        elif not tema_elegido and not titulares_seleccionados:
+            st.error("Seleccioná al menos una nota o escribí un tema.")
         else:
+            if not tema_elegido and titulares_seleccionados:
+                tema_elegido = titulares_seleccionados[0]["noticia"]["titulo"]
+
             urls_disponibles = [t for t in titulares_seleccionados if t["noticia"].get("url")]
             max_scrape = min(6, len(urls_disponibles))
 
-            # Paso 1: Scraping
             titulares_enriquecidos = titulares_seleccionados
             if urls_disponibles:
-                with st.spinner(f"🔍 Leyendo el cuerpo de {max_scrape} notas ({len(titulares_seleccionados)} en total)..."):
+                with st.spinner(f"🔍 Leyendo el cuerpo de {max_scrape} nota(s) seleccionada(s)..."):
                     titulares_enriquecidos = scrape_cuerpos_notas(titulares_seleccionados, max_notas=max_scrape)
-
                 ok_count = sum(1 for t in titulares_enriquecidos if t.get("ok"))
                 if ok_count > 0:
-                    st.success(f"✔ Se leyó el cuerpo de {ok_count}/{max_scrape} notas — redactando con información real")
+                    st.success(f"✔ Cuerpo leído en {ok_count}/{max_scrape} notas")
                 else:
-                    st.warning("⚠️ No se pudo leer el cuerpo de ninguna nota — activando modo esqueleto seguro")
+                    st.warning("⚠️ No se pudo leer el cuerpo — modo esqueleto seguro")
             else:
-                st.warning("⚠️ Ninguna noticia tiene URL disponible — activando modo esqueleto seguro")
+                st.warning("⚠️ Las notas seleccionadas no tienen URL — modo esqueleto seguro")
                 titulares_enriquecidos = [{**t, "cuerpo": "", "ok": False} for t in titulares_seleccionados]
 
-            # Paso 2: Generar con Claude
             with st.spinner("✦ Redactando con Claude..."):
                 try:
-                    prompt = prompt_nota_rapida(tema_elegido, titulares_enriquecidos, estilo_nota, tipo_nota)
+                    prompt = prompt_nota_rapida(tema_elegido, titulares_enriquecidos, estilo_nota, tipo_nota, contexto_extra.strip())
                     st.session_state.nota_rapida = call_claude(prompt, api_key_nota, 3500)
                     st.session_state.nota_rapida_titulares = titulares_enriquecidos
                     ok_final = sum(1 for t in titulares_enriquecidos if t.get("ok"))
-                    modo = "con cuerpo completo" if ok_final > 0 else "esqueleto seguro (sin cuerpo)"
-                    st.session_state.nota_rapida_modo = modo
+                    st.session_state.nota_rapida_modo = "con cuerpo completo" if ok_final > 0 else "esqueleto seguro (sin cuerpo)"
                 except Exception as e:
                     st.error(f"Error al llamar a Claude: {e}")
 
-    # Resultado
+    # ── PASO 4: Resultado ─────────────────────────────────────────────────────
     if st.session_state.nota_rapida:
         modo_badge = st.session_state.get("nota_rapida_modo", "")
         raw = st.session_state.nota_rapida
 
-        # ── Separar secciones por el delimitador de════ ──────────────────────
-        def _split_seccion(texto: str, encabezado: str) -> str:
-            """Extrae el contenido de una sección delimitada por ════...════"""
+        def _split_seccion(texto, encabezado):
             pattern = rf"════+\s*{re.escape(encabezado)}\s*════+\s*(.*?)(?=════|$)"
             m = re.search(pattern, texto, re.DOTALL | re.IGNORECASE)
             return m.group(1).strip() if m else ""
@@ -1904,18 +2020,15 @@ with tab_nota:
         seccion_nota        = _split_seccion(raw, "NOTA") or _split_seccion(raw, "ESQUELETO DE NOTA")
         seccion_verificacion = _split_seccion(raw, "TABLA DE VERIFICACIÓN") or _split_seccion(raw, "DATOS CONFIRMADOS.*")
         seccion_angulos     = _split_seccion(raw, "ÁNGULOS ALTERNATIVOS")
-
-        # Si el modelo no respetó el formato exacto, mostrar todo junto
         sin_secciones = not (seccion_nota or seccion_verificacion)
 
         if "esqueleto" in modo_badge:
-            st.warning("🦴 **Modo esqueleto seguro** — no había cuerpo de notas disponible. Completá los espacios vacíos antes de publicar.")
+            st.warning("🦴 **Modo esqueleto seguro** — completá los espacios antes de publicar.")
         elif modo_badge:
             ok_n = sum(1 for t in st.session_state.nota_rapida_titulares if t.get("ok"))
             st.info(f"📰 Generado con el cuerpo real de **{ok_n}** nota(s). Revisá la Tabla de Verificación antes de publicar.")
 
         if sin_secciones:
-            # Fallback: todo en un texto area editable
             st.markdown("#### 📄 Resultado")
             nota_editada = st.text_area("", value=raw, height=560, label_visibility="collapsed", key="nota_textarea")
         else:
@@ -1923,73 +2036,42 @@ with tab_nota:
 
             with tab_r1:
                 st.caption("Editá el texto antes de copiar o descargar.")
-                nota_editada = st.text_area(
-                    "", value=seccion_nota, height=480,
-                    label_visibility="collapsed", key="nota_textarea"
-                )
+                nota_editada = st.text_area("", value=seccion_nota, height=480, label_visibility="collapsed", key="nota_textarea")
                 col_dl1, col_dl2 = st.columns(2)
                 with col_dl1:
-                    st.download_button(
-                        "📥 Descargar nota .txt", nota_editada,
-                        file_name=f"nota_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-                        mime="text/plain", use_container_width=True,
-                    )
+                    st.download_button("📥 .txt", nota_editada,
+                        file_name=f"nota_{datetime.now().strftime('%Y%m%d_%H%M')}.txt", mime="text/plain", use_container_width=True)
                 with col_dl2:
-                    st.download_button(
-                        "📥 Descargar nota .md", nota_editada,
-                        file_name=f"nota_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
-                        mime="text/markdown", use_container_width=True,
-                    )
+                    st.download_button("📥 .md", nota_editada,
+                        file_name=f"nota_{datetime.now().strftime('%Y%m%d_%H%M')}.md", mime="text/markdown", use_container_width=True)
 
             with tab_r2:
                 if seccion_verificacion:
-                    # Colorear filas según el ícono de verificación
-                    lineas = seccion_verificacion.split("\n")
-                    for linea in lineas:
+                    for linea in seccion_verificacion.split("\n"):
                         linea = linea.strip()
-                        if not linea:
-                            continue
-                        if "✅" in linea:
-                            color, bg = "#166534", "#f0fdf4"
-                            borde = "#86efac"
-                        elif "⚠️" in linea or "⚠" in linea:
-                            color, bg = "#92400e", "#fffbeb"
-                            borde = "#fcd34d"
-                        elif "❌" in linea:
-                            color, bg = "#991b1b", "#fef2f2"
-                            borde = "#fca5a5"
-                        else:
-                            color, bg = "#374151", "#f9fafb"
-                            borde = "#e5e7eb"
+                        if not linea: continue
+                        if "✅" in linea:   color, bg, borde = "#166534", "#f0fdf4", "#86efac"
+                        elif "⚠️" in linea: color, bg, borde = "#92400e", "#fffbeb", "#fcd34d"
+                        elif "❌" in linea:  color, bg, borde = "#991b1b", "#fef2f2", "#fca5a5"
+                        else:               color, bg, borde = "#374151", "#f9fafb", "#e5e7eb"
                         st.markdown(
                             f'<div style="padding:7px 12px;margin-bottom:5px;border-radius:6px;'
-                            f'background:{bg};border-left:3px solid {borde};'
-                            f'color:{color};font-size:14px;line-height:1.5">{linea}</div>',
-                            unsafe_allow_html=True,
-                        )
-                    st.divider()
-                    st.download_button(
-                        "📥 Descargar tabla .txt", seccion_verificacion,
-                        file_name=f"verificacion_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-                        mime="text/plain",
-                    )
+                            f'background:{bg};border-left:3px solid {borde};color:{color};font-size:14px">{linea}</div>',
+                            unsafe_allow_html=True)
+                    st.download_button("📥 Tabla .txt", seccion_verificacion,
+                        file_name=f"verificacion_{datetime.now().strftime('%Y%m%d_%H%M')}.txt", mime="text/plain")
                 else:
-                    st.info("No se generó tabla de verificación. Intentá regenerar la nota.")
+                    st.info("No se generó tabla de verificación.")
 
             with tab_r3:
                 if seccion_angulos:
                     st.markdown(seccion_angulos)
                 else:
-                    st.info("No se detectaron ángulos alternativos en la respuesta.")
+                    st.info("No se detectaron ángulos alternativos.")
 
-        # Descarga completa siempre disponible
         st.divider()
-        st.download_button(
-            "📥 Descargar respuesta completa",
-            raw,
-            file_name=f"nota_completa_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-            mime="text/plain",
-        )
+        st.download_button("📥 Descargar respuesta completa", raw,
+            file_name=f"nota_completa_{datetime.now().strftime('%Y%m%d_%H%M')}.txt", mime="text/plain")
     else:
         st.info("El borrador aparecerá acá una vez que lo generes.")
 
