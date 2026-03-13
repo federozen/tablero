@@ -390,16 +390,9 @@ def extraer_rss(xml_text: str) -> list:
     return noticias[:MAX_ITEMS]
 
 def extraer_tyc(html: str) -> list:
-    """
-    Extractor específico para TyC Sports.
-    1. Extrae URLs del bloque JSON-LD (ItemList) que siempre está en el HTML.
-    2. Mapea URL → título desde los <a> del HTML.
-    3. Fallback: slugs de las URLs.
-    """
+    """Extractor TyC Sports: usa JSON-LD ItemList para URLs + mapea titulos desde el HTML."""
     noticias, vistos = [], set()
     soup = BeautifulSoup(html, "html.parser")
-
-    # ── 1. URLs desde JSON-LD ──────────────────────────────────────────────────
     urls_ordenadas = []
     for script in soup.find_all("script", type="application/ld+json"):
         try:
@@ -419,8 +412,6 @@ def extraer_tyc(html: str) -> list:
             _walk(data)
         except Exception:
             pass
-
-    # ── 2. Mapear URL → título ─────────────────────────────────────────────────
     url_to_titulo = {}
     for a in soup.find_all("a", href=True):
         href = a.get("href", "")
@@ -440,8 +431,6 @@ def extraer_tyc(html: str) -> list:
         titulo = re.sub(r"\s+", " ", titulo).strip()
         if href and titulo and 20 <= len(titulo) <= 300:
             url_to_titulo[href] = titulo
-
-    # ── 3. Armar lista en orden JSON-LD ───────────────────────────────────────
     for url in urls_ordenadas:
         if len(noticias) >= MAX_ITEMS:
             break
@@ -456,6 +445,70 @@ def extraer_tyc(html: str) -> list:
             continue
         vistos.add(titulo)
         noticias.append({"titulo": titulo, "url": url, "imagen": ""})
+    return noticias[:MAX_ITEMS]
+
+
+def extraer_globo(html: str) -> list:
+    """
+    Extractor especifico para GloboEsporte (ge.globo.com).
+    Clases reales: feed-post-body-title, bastian-feed-item, bstn-hl.
+    """
+    noticias, vistos = [], set()
+    soup = BeautifulSoup(html, "html.parser")
+    base = "https://ge.globo.com"
+
+    def resolve(href):
+        if not href: return None
+        if href.startswith("http"): return href
+        if href.startswith("/"): return base + href
+        return None
+
+    def add(titulo, url, imagen=""):
+        titulo = re.sub(r"\s+", " ", titulo).strip()
+        if titulo and 20 <= len(titulo) <= 300 and titulo not in vistos:
+            vistos.add(titulo)
+            noticias.append({"titulo": titulo, "url": url, "imagen": imagen})
+
+    # 1. Headlines destacados (bstn-hl) con imagen CSS
+    for hl in soup.select(".bstn-hl"):
+        if len(noticias) >= MAX_ITEMS: break
+        link = hl.find("a", href=True)
+        url = resolve(link.get("href")) if link else None
+        style = hl.get("style", "")
+        img_m = re.search(r"url\(['\"]?(https?://[^'\"\)\s]+)['\"]?\)", style)
+        imagen = img_m.group(1) if img_m else ""
+        titulo = hl.get("data-title") or hl.get("aria-label") or ""
+        if not titulo and link:
+            titulo = link.get("aria-label") or link.get_text(strip=True)
+        if titulo:
+            add(titulo, url, imagen)
+
+    # 2. Feed items Bastian
+    for sel in [".bastian-feed-item", ".bstn-item-shape", ".feed-post"]:
+        for item in soup.select(sel):
+            if len(noticias) >= MAX_ITEMS: break
+            titulo_el = (item.select_one(".feed-post-body-title") or
+                         item.select_one(".feed-post-header") or
+                         item.select_one("h2") or item.select_one("h3"))
+            if not titulo_el: continue
+            titulo = titulo_el.get_text(strip=True)
+            link = item.select_one("a.feed-post-link") or item.find("a", href=True)
+            url = resolve(link.get("href")) if link else None
+            img_el = item.select_one(".bstn-fd-picture-image") or item.find("img")
+            imagen = ""
+            if img_el:
+                imagen = img_el.get("src") or img_el.get("data-src") or ""
+            add(titulo, url, imagen)
+
+    # 3. Fallback: links con titulo largo
+    if len(noticias) < 8:
+        for a in soup.find_all("a", href=True):
+            if len(noticias) >= MAX_ITEMS: break
+            href = resolve(a.get("href", ""))
+            if not href or "globo.com" not in href: continue
+            titulo_el = a.select_one(".feed-post-body-title") or a.select_one("h2") or a.select_one("h3")
+            titulo = titulo_el.get_text(strip=True) if titulo_el else a.get_text(strip=True)
+            add(titulo, href)
 
     return noticias[:MAX_ITEMS]
 
@@ -464,11 +517,15 @@ def extraer_generico(html: str, fuente: dict) -> list:
     if fuente.get("es_rss"):
         return extraer_rss(html)
 
-    # TyC Sports — extractor específico por JSON-LD
+    # TyC Sports
     if fuente.get("id") == "tyc":
         return extraer_tyc(html)
 
-    # Doble Amarilla es WordPress — usar su feed RSS que incluye imágenes
+    # GloboEsporte
+    if fuente.get("id") == "globo":
+        return extraer_globo(html)
+
+    # Doble Amarilla es WordPress — usar su feed RSS que incluye imagenes
     if fuente.get("es_wp"):
         feed_url = fuente["url"].rstrip("/") + "/feed/"
         try:
