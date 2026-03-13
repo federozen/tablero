@@ -105,7 +105,7 @@ FUENTES_INT = [
     {"id": "marca",     "nombre": "Marca",            "url": "https://www.marca.com/",                          "color": "#267326"},
     {"id": "mundodep",  "nombre": "Mundo Deportivo",  "url": "https://www.mundodeportivo.com/",                 "color": "#1565c0"},
     {"id": "sport",     "nombre": "Sport",            "url": "https://www.sport.es/es/",                        "color": "#cc0020"},
-    {"id": "globo",     "nombre": "Globoesporte",     "url": "https://ge.globo.com/",                           "color": "#007a2f"},
+    {"id": "globo",     "nombre": "Globoesporte",     "url": "https://ge.globo.com/rss/ultimas-noticias/",      "color": "#007a2f", "es_rss": True},
     {"id": "placar",    "nombre": "Placar",           "url": "https://placar.com.br/feed/",                     "color": "#c00040", "es_rss": True},
     {"id": "gazzetta",  "nombre": "Gazzetta Sport",   "url": "https://www.gazzetta.it/Calcio/",                 "color": "#e8000a"},
     {"id": "corriere",  "nombre": "Corriere Sport",   "url": "https://www.corrieredellosport.it/calcio",        "color": "#e06000"},
@@ -450,83 +450,65 @@ def extraer_tyc(html: str) -> list:
 
 def extraer_globo(html: str) -> list:
     """
-    Extractor GloboEsporte: usa la API interna de Bastian que el propio sitio
-    consume para cargar el feed dinamicamente (SPA). El HTML estatico no tiene
-    las noticias reales porque se renderizan via JS.
-    URL de la API extraida del HTML: SETTINGS.BASTIAN["RESOURCE_URI"].
+    Extractor especifico para GloboEsporte (ge.globo.com).
+    Clases reales: feed-post-body-title, bastian-feed-item, bstn-hl.
     """
     noticias, vistos = [], set()
+    soup = BeautifulSoup(html, "html.parser")
+    base = "https://ge.globo.com"
 
-    # Extraer la URL de la API Bastian desde el HTML
-    bastian_url = None
-    m = re.search(r'RESOURCE_URI["\']\\s*:\\s*["\']([^"\']+)["\']', html)
-    if m:
-        bastian_url = m.group(1)
+    def resolve(href):
+        if not href: return None
+        if href.startswith("http"): return href
+        if href.startswith("/"): return base + href
+        return None
 
-    # Fallback: URL conocida de ge.globo.com (home)
-    if not bastian_url:
-        bastian_url = (
-            "https://falkor-cda.bastian.globo.com/tenants/ge/instances/"
-            "10045b9c-e4d8-4a1a-9909-02240f8ef217/posts"
-        )
+    def add(titulo, url, imagen=""):
+        titulo = re.sub(r"\s+", " ", titulo).strip()
+        if titulo and 20 <= len(titulo) <= 300 and titulo not in vistos:
+            vistos.add(titulo)
+            noticias.append({"titulo": titulo, "url": url, "imagen": imagen})
 
-    try:
-        api_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Referer": "https://ge.globo.com/",
-            "Origin": "https://ge.globo.com",
-        }
-        resp = requests.get(bastian_url, headers=api_headers, timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            # La API devuelve lista de items o dict con "items"/"posts"
-            items = data if isinstance(data, list) else data.get("items") or data.get("posts") or []
-            for item in items:
-                if len(noticias) >= MAX_ITEMS:
-                    break
-                # Campos posibles segun estructura Bastian
-                titulo = (
-                    item.get("title") or item.get("titulo") or
-                    item.get("headline") or item.get("summary") or ""
-                )
-                titulo = re.sub(r"\s+", " ", titulo).strip()
-                if not titulo or len(titulo) < 20 or titulo in vistos:
-                    continue
-                url = item.get("url") or item.get("link") or item.get("permalink")
-                # Imagen
-                imagen = ""
-                cover = item.get("cover") or item.get("image") or {}
-                if isinstance(cover, dict):
-                    imagen = cover.get("url") or cover.get("src") or ""
-                elif isinstance(cover, str):
-                    imagen = cover
-                vistos.add(titulo)
-                noticias.append({"titulo": titulo, "url": url, "imagen": imagen})
-    except Exception:
-        pass
+    # 1. Headlines destacados (bstn-hl) con imagen CSS
+    for hl in soup.select(".bstn-hl"):
+        if len(noticias) >= MAX_ITEMS: break
+        link = hl.find("a", href=True)
+        url = resolve(link.get("href")) if link else None
+        style = hl.get("style", "")
+        img_m = re.search(r"url\(['\"]?(https?://[^'\"\)\s]+)['\"]?\)", style)
+        imagen = img_m.group(1) if img_m else ""
+        titulo = hl.get("data-title") or hl.get("aria-label") or ""
+        if not titulo and link:
+            titulo = link.get("aria-label") or link.get_text(strip=True)
+        if titulo:
+            add(titulo, url, imagen)
 
-    # Si la API fallo, fallback al HTML con selectores Bastian
-    if len(noticias) < 5:
-        soup = BeautifulSoup(html, "html.parser")
-        base = "https://ge.globo.com"
-        def resolve(href):
-            if not href: return None
-            if href.startswith("http"): return href
-            if href.startswith("/"): return base + href
-            return None
-        for sel in [".bastian-feed-item", ".bstn-item-shape", ".feed-post"]:
-            for item in soup.select(sel):
-                if len(noticias) >= MAX_ITEMS: break
-                titulo_el = (item.select_one(".feed-post-body-title") or
-                             item.select_one("h2") or item.select_one("h3"))
-                if not titulo_el: continue
-                titulo = re.sub(r"\s+", " ", titulo_el.get_text(strip=True)).strip()
-                if not titulo or len(titulo) < 20 or titulo in vistos: continue
-                link = item.select_one("a.feed-post-link") or item.find("a", href=True)
-                url = resolve(link.get("href")) if link else None
-                vistos.add(titulo)
-                noticias.append({"titulo": titulo, "url": url, "imagen": ""})
+    # 2. Feed items Bastian
+    for sel in [".bastian-feed-item", ".bstn-item-shape", ".feed-post"]:
+        for item in soup.select(sel):
+            if len(noticias) >= MAX_ITEMS: break
+            titulo_el = (item.select_one(".feed-post-body-title") or
+                         item.select_one(".feed-post-header") or
+                         item.select_one("h2") or item.select_one("h3"))
+            if not titulo_el: continue
+            titulo = titulo_el.get_text(strip=True)
+            link = item.select_one("a.feed-post-link") or item.find("a", href=True)
+            url = resolve(link.get("href")) if link else None
+            img_el = item.select_one(".bstn-fd-picture-image") or item.find("img")
+            imagen = ""
+            if img_el:
+                imagen = img_el.get("src") or img_el.get("data-src") or ""
+            add(titulo, url, imagen)
+
+    # 3. Fallback: links con titulo largo
+    if len(noticias) < 8:
+        for a in soup.find_all("a", href=True):
+            if len(noticias) >= MAX_ITEMS: break
+            href = resolve(a.get("href", ""))
+            if not href or "globo.com" not in href: continue
+            titulo_el = a.select_one(".feed-post-body-title") or a.select_one("h2") or a.select_one("h3")
+            titulo = titulo_el.get_text(strip=True) if titulo_el else a.get_text(strip=True)
+            add(titulo, href)
 
     return noticias[:MAX_ITEMS]
 
