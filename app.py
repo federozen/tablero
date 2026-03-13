@@ -594,53 +594,32 @@ def extraer_generico(html: str, fuente: dict) -> list:
 
     return noticias[:MAX_ITEMS]
 
-def _fetch_html(url: str) -> str:
-    """Descarga una URL y devuelve el texto con encoding correcto."""
-    resp = requests.get(url, headers=HEADERS, timeout=15)
-    resp.raise_for_status()
-    content_type = resp.headers.get("content-type", "").lower()
-    if "charset=" in content_type:
-        encoding = content_type.split("charset=")[-1].split(";")[0].strip()
-    else:
-        raw = resp.content
-        sniff = raw[:4096].decode("ascii", errors="ignore").lower()
-        if 'charset="utf-8"' in sniff or "charset=utf-8" in sniff:
-            encoding = "utf-8"
-        elif 'charset="iso-8859-1"' in sniff or 'charset=iso-8859-1' in sniff:
-            encoding = "iso-8859-1"
-        elif 'charset="windows-1252"' in sniff or 'charset=windows-1252' in sniff:
-            encoding = "windows-1252"
-        else:
-            detected = resp.apparent_encoding or "utf-8"
-            encoding = detected if detected.lower() not in ("ascii", "windows-1252") else "utf-8"
-    resp.encoding = encoding
-    return resp.text
-
 def fetch_fuente(fuente: dict) -> dict:
     try:
-        # TyC Sports: scraping de varias secciones combinadas para llegar a 50
-        if fuente["id"] == "tyc":
-            urls_tyc = [
-                "https://www.tycsports.com/futbol/",
-                "https://www.tycsports.com/",
-                "https://www.tycsports.com/tenis/",
-            ]
-            noticias, vistos = [], set()
-            for url in urls_tyc:
-                if len(noticias) >= MAX_ITEMS:
-                    break
-                try:
-                    html = _fetch_html(url)
-                    for n in extraer_generico(html, fuente):
-                        if n["titulo"] not in vistos and len(noticias) < MAX_ITEMS:
-                            vistos.add(n["titulo"])
-                            noticias.append(n)
-                except Exception:
-                    continue
-            return {"id": fuente["id"], "noticias": noticias, "error": None}
-
-        html = _fetch_html(fuente["url"])
-        noticias = extraer_generico(html, fuente)
+        resp = requests.get(fuente["url"], headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+        # Detectar encoding real desde el header o el HTML antes de usar resp.text
+        # requests a veces asume ISO-8859-1 para text/html sin charset declarado
+        content_type = resp.headers.get("content-type", "").lower()
+        if "charset=" in content_type:
+            # Respetar el charset del servidor
+            encoding = content_type.split("charset=")[-1].split(";")[0].strip()
+        else:
+            # Intentar detectar desde el meta charset del HTML
+            raw = resp.content
+            sniff = raw[:4096].decode("ascii", errors="ignore").lower()
+            if 'charset="utf-8"' in sniff or "charset=utf-8" in sniff:
+                encoding = "utf-8"
+            elif 'charset="iso-8859-1"' in sniff or 'charset=iso-8859-1' in sniff:
+                encoding = "iso-8859-1"
+            elif 'charset="windows-1252"' in sniff or 'charset=windows-1252' in sniff:
+                encoding = "windows-1252"
+            else:
+                # Si apparent_encoding detecta latin, usarlo; si no, utf-8
+                detected = resp.apparent_encoding or "utf-8"
+                encoding = detected if detected.lower() not in ("ascii", "windows-1252") else "utf-8"
+        resp.encoding = encoding
+        noticias = extraer_generico(resp.text, fuente)
         return {"id": fuente["id"], "noticias": noticias, "error": None}
     except Exception as e:
         return {"id": fuente["id"], "noticias": [], "error": str(e)}
