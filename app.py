@@ -101,7 +101,7 @@ FUENTES_NAC = [
 ]
 
 FUENTES_INT = [
-    {"id": "as",        "nombre": "AS",              "url": "https://as.com/",                                 "color": "#b00020"},
+    {"id": "as",        "nombre": "AS",              "url": "https://as.com/futbol/",                          "color": "#b00020"},
     {"id": "marca",     "nombre": "Marca",            "url": "https://www.marca.com/",                          "color": "#267326"},
     {"id": "mundodep",  "nombre": "Mundo Deportivo",  "url": "https://www.mundodeportivo.com/",                 "color": "#1565c0"},
     {"id": "sport",     "nombre": "Sport",            "url": "https://www.sport.es/es/",                        "color": "#cc0020"},
@@ -393,22 +393,20 @@ def extraer_tyc(html: str) -> list:
     """
     Extractor específico para TyC Sports.
     1. Extrae URLs del bloque JSON-LD (ItemList) que siempre está en el HTML.
-    2. Extrae títulos buscando en los selectores específicos de TyC.
-    3. Fallback: usa los títulos de las <a> cuya href matchea las URLs del JSON-LD.
+    2. Mapea URL → título desde los <a> del HTML.
+    3. Fallback: slugs de las URLs.
     """
     noticias, vistos = [], set()
     soup = BeautifulSoup(html, "html.parser")
 
-    # ── 1. Obtener URLs desde JSON-LD ──────────────────────────────────────────
+    # ── 1. URLs desde JSON-LD ──────────────────────────────────────────────────
     urls_ordenadas = []
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(script.string or "")
-            # Puede ser un dict con mainEntity, o directamente la lista
             def _walk(obj):
                 if isinstance(obj, dict):
-                    t = obj.get("@type", "")
-                    if t == "ItemList":
+                    if obj.get("@type") == "ItemList":
                         for item in obj.get("itemListElement", []):
                             u = item.get("url") or item.get("item", {}).get("url")
                             if u and u.startswith("http") and u not in urls_ordenadas:
@@ -422,7 +420,7 @@ def extraer_tyc(html: str) -> list:
         except Exception:
             pass
 
-    # ── 2. Mapear URL → título desde los links del HTML ────────────────────────
+    # ── 2. Mapear URL → título ─────────────────────────────────────────────────
     url_to_titulo = {}
     for a in soup.find_all("a", href=True):
         href = a.get("href", "")
@@ -430,34 +428,25 @@ def extraer_tyc(html: str) -> list:
             href = "https://www.tycsports.com" + href if href.startswith("/") else None
         if not href:
             continue
-        # Buscar texto del título dentro del <a> o en sus selectores específicos de TyC
         titulo = None
-        for sel in ["h1","h2","h3","h4",
-                    "[class*='title']","[class*='Title']",
-                    "[class*='headline']","[class*='Headline']",
-                    "[class*='titular']","[class*='Titular']",
-                    "[class*='nota']","[class*='tit']"]:
+        for sel in ["h1","h2","h3","h4","[class*='title']","[class*='Title']",
+                    "[class*='headline']","[class*='titular']","[class*='tit']"]:
             t_el = a.select_one(sel)
             if t_el:
                 titulo = t_el.get_text(strip=True)
                 break
         if not titulo:
             titulo = a.get_text(strip=True)
-        # Limpiar
         titulo = re.sub(r"\s+", " ", titulo).strip()
-        if href and titulo and len(titulo) >= 20 and len(titulo) <= 300:
+        if href and titulo and 20 <= len(titulo) <= 300:
             url_to_titulo[href] = titulo
 
-    # ── 3. Armar lista en el orden del JSON-LD ─────────────────────────────────
+    # ── 3. Armar lista en orden JSON-LD ───────────────────────────────────────
     for url in urls_ordenadas:
         if len(noticias) >= MAX_ITEMS:
             break
-        titulo = url_to_titulo.get(url)
+        titulo = url_to_titulo.get(url) or url_to_titulo.get(url.rstrip("/"))
         if not titulo:
-            # Intentar con URL sin trailing slash o variantes
-            titulo = url_to_titulo.get(url.rstrip("/"))
-        if not titulo:
-            # Extraer título desde la URL como último recurso
             slug = url.rstrip("/").split("/")[-1]
             slug = re.sub(r"-id\d+$", "", slug)
             titulo = slug.replace("-", " ").title()
@@ -467,28 +456,6 @@ def extraer_tyc(html: str) -> list:
             continue
         vistos.add(titulo)
         noticias.append({"titulo": titulo, "url": url, "imagen": ""})
-
-    # ── 4. Si el JSON-LD no dio resultados, fallback genérico mejorado ─────────
-    if len(noticias) < 5:
-        for sel in ["[class*='tyc']","[class*='news']","[class*='card']",
-                    "[class*='nota']","[class*='article']","article",
-                    "[class*='item']"]:
-            for card in soup.select(sel)[:MAX_ITEMS * 2]:
-                if len(noticias) >= MAX_ITEMS:
-                    break
-                for tsel in ["h1","h2","h3","h4","[class*='title']","[class*='titular']"]:
-                    t_el = card.select_one(tsel)
-                    if t_el:
-                        titulo = t_el.get_text(strip=True)
-                        if len(titulo) >= 20 and len(titulo) <= 300 and titulo not in vistos:
-                            link = card.find("a", href=True)
-                            url = None
-                            if link:
-                                href = link.get("href","")
-                                url = href if href.startswith("http") else ("https://www.tycsports.com" + href if href.startswith("/") else None)
-                            vistos.add(titulo)
-                            noticias.append({"titulo": titulo, "url": url, "imagen": ""})
-                        break
 
     return noticias[:MAX_ITEMS]
 
