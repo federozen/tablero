@@ -105,7 +105,7 @@ FUENTES_INT = [
     {"id": "marca",     "nombre": "Marca",            "url": "https://www.marca.com/",                          "color": "#267326"},
     {"id": "mundodep",  "nombre": "Mundo Deportivo",  "url": "https://www.mundodeportivo.com/",                 "color": "#1565c0"},
     {"id": "sport",     "nombre": "Sport",            "url": "https://www.sport.es/es/",                        "color": "#cc0020"},
-    {"id": "globo",     "nombre": "Globoesporte",     "url": "https://ge.globo.com/rss/ultimas-noticias/",      "color": "#007a2f", "es_rss": True},
+    {"id": "globo",     "nombre": "Globoesporte",     "url": "https://ge.globo.com/",                           "color": "#007a2f", "es_globo": True},
     {"id": "placar",    "nombre": "Placar",           "url": "https://placar.com.br/feed/",                     "color": "#c00040", "es_rss": True},
     {"id": "gazzetta",  "nombre": "Gazzetta Sport",   "url": "https://www.gazzetta.it/Calcio/",                 "color": "#e8000a"},
     {"id": "corriere",  "nombre": "Corriere Sport",   "url": "https://www.corrieredellosport.it/calcio",        "color": "#e06000"},
@@ -513,6 +513,41 @@ def extraer_globo(html: str) -> list:
     return noticias[:MAX_ITEMS]
 
 
+def fetch_globo() -> list:
+    """
+    Extractor dedicado para GloboEsporte.
+    Prueba múltiples endpoints RSS con headers de browser real.
+    El sitio rechaza requests sin headers adecuados (400 Bad Request).
+    """
+    rss_urls = [
+        "https://ge.globo.com/rss/ultimas-noticias/",
+        "https://ge.globo.com/rss/futebol/",
+        "https://ge.globo.com/rss/",
+        "https://globoesporte.globo.com/rss/ultimas-noticias/",
+    ]
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        "Accept-Language": "pt-BR,pt;q=0.9,es;q=0.8",
+        "Referer": "https://ge.globo.com/",
+        "Cache-Control": "no-cache",
+    }
+    for url in rss_urls:
+        try:
+            resp = requests.get(url, headers=headers, timeout=15)
+            if resp.status_code == 200 and ("<rss" in resp.text[:500] or "<feed" in resp.text[:500]):
+                noticias = extraer_rss(resp.text)
+                if noticias:
+                    return noticias
+        except Exception:
+            continue
+    return []
+
+
 def extraer_generico(html: str, fuente: dict) -> list:
     if fuente.get("es_rss"):
         return extraer_rss(html)
@@ -727,6 +762,13 @@ def extraer_generico(html: str, fuente: dict) -> list:
     return noticias[:MAX_ITEMS]
 
 def fetch_fuente(fuente: dict) -> dict:
+    # GloboEsporte necesita headers especiales y multiples RSS
+    if fuente.get("es_globo"):
+        try:
+            noticias = fetch_globo()
+            return {"id": fuente["id"], "noticias": noticias, "error": None}
+        except Exception as e:
+            return {"id": fuente["id"], "noticias": [], "error": str(e)}
     try:
         resp = requests.get(fuente["url"], headers=HEADERS, timeout=15)
         resp.raise_for_status()
